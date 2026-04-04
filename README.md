@@ -1,4 +1,4 @@
-<img width="979" height="833" alt="image" src="https://github.com/user-attachments/assets/88b57d26-6874-4236-b1f4-139a328e5068" /># ☁️ Cloud FinOps Cost Optimization
+ ☁️ Cloud FinOps Cost Optimization
 
 ![Python](https://img.shields.io/badge/python-%233776AB.svg?style=for-the-badge&logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/fastapi-%23009688.svg?style=for-the-badge&logo=fastapi&logoColor=white)
