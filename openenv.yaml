@@ -1,0 +1,145 @@
+name: cloud-finops-env
+version: "1.0.0"
+
+description: >
+  OpenEnv environment simulating cloud FinOps cost optimization for NovaCart,
+  a fictional mid-size e-commerce platform. The agent plays the role of an
+  automated DevOps/FinOps engineer that must cut cloud waste without causing
+  production downtime. Three tasks of increasing difficulty cover orphan
+  cleanup, safe resource rightsizing, multi-region traffic migration, and
+  honeypot trap avoidance.
+
+domain: cloud-infrastructure
+tags:
+  - finops
+  - cloud
+  - devops
+  - cost-optimization
+  - real-world
+  - multi-region
+  - sequential-decisions
+
+observation_space:
+  type: structured
+  description: >
+    JSON object containing: task_id, step, max_steps, monthly_bill_start,
+    monthly_bill_current, savings_target, savings_achieved, uptime_percent,
+    downtime_events, regions, traffic_migrated_from, connections_drained,
+    honeypot_hits, sequence_violations, feedback, and a list of resources.
+    Each resource exposes id, name, resource_type, status, region,
+    monthly_cost, cpu_avg_24h, ram_avg_24h, traffic_per_hour,
+    queries_per_hour, attached_to, dependency_of, storage_tier,
+    last_accessed_days_ago, size_gb, instance_size, tags.
+    Hidden fields (safe_to_terminate, is_production, peak_cpu_2am,
+    peak_queries_2am) are never exposed to the agent.
+
+action_space:
+  type: discrete-structured
+  actions:
+    - name: terminate
+      description: Permanently delete a resource (saves full monthly_cost).
+      required: [resource_id]
+    - name: resize
+      description: Downgrade a VM or database instance size (saves partial cost).
+      required: [resource_id, new_size]
+      values:
+        new_size: [nano, micro, small, medium, large, xlarge]
+    - name: migrate_storage
+      description: Move a volume to cold storage tier (saves 80% of monthly_cost).
+      required: [resource_id, target_tier]
+      values:
+        target_tier: [cold]
+    - name: migrate_traffic
+      description: "Task 3: redirect live traffic away from a region before shutdown."
+      required: [source_region]
+      values:
+        source_region: [us-east-1]
+    - name: wait
+      description: "Task 3: drain connections after migrate_traffic to unlock safe termination."
+      required: []
+
+reward:
+  type: dense
+  description: >
+    Dense reward signal proportional to dollars saved. Large negative penalties
+    for downtime events (killing active production resources), honeypot hits
+    (deleting resources that look idle but run critical batch jobs), and
+    sequence violations (terminating east-1 before migrating traffic).
+    A small per-step cost encourages efficiency.
+  key_values:
+    terminate_safe: "+monthly_cost (as reward units, proportional to savings)"
+    terminate_unsafe_production: "-(W_DOWNTIME + W_FALSE_KILL) large penalty"
+    terminate_honeypot: "-(W_HONEYPOT + W_DOWNTIME) largest penalty"
+    resize_correct: "+savings_delta reward"
+    migrate_storage_correct: "+savings_delta reward"
+    migrate_traffic_correct: "0 direct reward, unlocks safe termination"
+    wait_after_migrate: "small opportunity cost, unlocks east-1 terminations"
+    wait_before_migrate: "-W_SEQUENCE sequence violation penalty"
+    per_step_cost: "small negative constant (efficiency pressure)"
+
+tasks:
+  - id: task_1
+    name: "Orphan Cleanup"
+    difficulty: easy
+    max_steps: 30
+    savings_target: 705.0
+    monthly_bill: 7450.0
+    regions: [us-east-1]
+    description: >
+      20 resources in us-east-1. Find and delete 8 provably orphaned resources:
+      2 unassigned IPs, 3 detached volumes, 2 stopped VMs, 1 old snapshot.
+      Do not touch any production resources.
+    grading: >
+      Score = (orphans_deleted / 8) - (false_kills × 0.20) - (downtime_events × 0.20).
+      Perfect run (all 8 orphans, no production kills) = 1.0.
+
+  - id: task_2
+    name: "Rightsizing & Cold Migration"
+    difficulty: medium
+    max_steps: 40
+    savings_target: 6000.0
+    monthly_bill: 16908.0
+    regions: [us-east-1]
+    description: >
+      30 resources in us-east-1. Resize oversized VMs (low CPU utilisation under 10%)
+      and migrate stale archives to cold storage (last_accessed_days_ago > 240).
+      Target: $6,000/month savings. Max achievable safely ≈ $4,600.
+    grading: >
+      Score = min(savings / $6,000, 1.0) - (downtime_events × 0.20) - (false_kills × 0.20).
+
+  - id: task_3
+    name: "Multi-Region Failover & Shutdown"
+    difficulty: hard
+    max_steps: 60
+    savings_target: 15000.0
+    monthly_bill: ~105000.0
+    regions: [us-east-1, us-west-2]
+    description: >
+      50 resources across us-east-1 (legacy) and us-west-2 (primary).
+      Target: save $15,000/month by shutting down all east-1 infrastructure.
+      MANDATORY SEQUENCE: migrate_traffic(source_region='us-east-1') → wait → terminate.
+      Three honeypot traps: midnight batch databases that appear idle on 24h averages,
+      dev-tagged resources with high live traffic, and a volume that appears orphaned
+      but has dependency_of set.
+    grading: >
+      Score = min(savings / $15,000, 1.0)
+            - (downtime_events × 0.20)
+            - (false_kills × 0.20)
+            - (honeypot_hits × 0.25)
+            - (sequence_violations × 0.15).
+
+endpoints:
+  health: GET /
+  reset: POST /reset
+  step: POST /step
+  state: GET /state
+  tasks: GET /tasks
+  grader: POST /grader
+  baseline: POST /baseline
+
+runtime:
+  port: 7860
+  sdk: docker
+  language: python
+  framework: fastapi
+  python_version: "3.11"
