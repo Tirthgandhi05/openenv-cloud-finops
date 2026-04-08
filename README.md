@@ -311,17 +311,19 @@ Hugging Face Spaces compatible — listens on port 7860.
 | CF-005 | Multi-Region Redundancy | Infrastructure duplicated across regions | Migrate traffic → shutdown legacy region |
 | CF-006 | Hidden Dependency Trap | Resource appears idle but is critical | Check `dependency_of` before deletion |
 
-
 ## Project Structure
+
+```bash
+.
 ├── Dockerfile
 ├── README.md
 ├── requirements.txt
 ├── openenv.yaml
-├── tasks.py # Scenario definitions (6 scenarios across 3 tasks)
-├── graders.py # Deterministic graders for all tasks
-├── inference.py # Baseline agent + smart fallback logic
-├── server/
-│ ├── init.py
-│ ├── app.py # FastAPI endpoints
-│ ├── environment.py # Core OpenEnv step/reset/state logic
-│ └── models.py # Typed Pydantic models (Action, Observation, Reward)
+├── tasks.py        # Scenario definitions (6 scenarios across 3 tasks)
+├── graders.py      # Deterministic graders for all tasks
+├── inference.py    # Baseline agent + smart fallback logic
+└── server/
+    ├── __init__.py
+    ├── app.py          # FastAPI endpoints
+    ├── environment.py  # Core OpenEnv step/reset/state logic
+    └── models.py       # Typed Pydantic models (Action, Observation, Reward)
