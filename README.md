@@ -7,8 +7,6 @@
 
 **Cloud Infrastructure Cost Optimization Environment**
 
-Version 1.0.0 | Domain: Cloud Infrastructure / FinOps / AI Agent Training
-
 ---
 
 ## Environment Description
