@@ -41,8 +41,8 @@ dotenv.load_dotenv()  # Load environment variables from .env file if present
 ENV_BASE_URL = os.environ.get("ENV_BASE_URL", "http://localhost:7860")
 API_BASE_URL = os.environ.get("API_BASE_URL", "https://api.groq.com/openai/v1")
 MODEL_NAME   = os.environ.get("MODEL_NAME", "llama-3.3-70b-versatile")
-HF_TOKEN     = os.environ.get("HF_TOKEN", "OPENAI_KEY")  # Can be Groq key or HF token
-OPENAI_KEY   = os.environ.get("OPENAI_API_KEY")
+HF_TOKEN     = os.environ.get("HF_TOKEN", "OPENAI_API_KEY")  # Can be Groq key or HF token
+OPENAI_KEY   = os.environ.get("")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Server client helpers
@@ -504,7 +504,7 @@ def run_episode(
 
         # Small pause to avoid hammering free-tier APIs
         if use_llm and API_BASE_URL:
-            time.sleep(1.5)#to avoid rate limits
+            time.sleep(3)#to avoid rate limits
 
     grade = get_grade()
 
