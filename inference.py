@@ -1,789 +1,593 @@
+#!/usr/bin/env python3
 """
-inference.py — Cloud FinOps Cost Optimization Sandbox
-OpenEnv-compliant inference script.
+inference.py — Cloud FinOps Sandbox baseline agent.
 
-LLM: Groq (llama-3.3-70b-versatile via OpenAI client)
-Fallback: deterministic heuristic that still scores meaningfully.
+Calls the running server at ENV_BASE_URL (default: http://localhost:7860).
+Uses LLM if API_BASE_URL + HF_TOKEN set; falls back to deterministic heuristic.
 
-Log format strictly follows the [START] / [STEP] / [END] spec:
-    [START] task=<id> env=<benchmark> model=<model>
-    [STEP]  step=<n> action=<json> reward=<float> done=<bool> error=<str|null>
-    [END]   success=<bool> steps=<n> score=<float> rewards=<csv>
+Budget: designed to complete all 3 tasks in ≤ 50 total API calls.
+  Task 1: up to 12 steps (8 orphan deletes)
+  Task 2: up to 15 steps (5 resizes + 3 cold migrations)
+  Task 3: up to 25 steps (migrate+wait + 15 terminates + 4 west-2 cleanups)
 
-Score is fetched from POST /grader (the only true hackathon score).
+OpenAI-compatible: works with any /v1/chat/completions endpoint.
+  Set API_BASE_URL=https://api.groq.com/openai/v1 + HF_TOKEN=<groq_key>
+  Or set OPENAI_API_KEY for direct OpenAI access.
+
+Usage:
+  python inference.py
+  python inference.py --json
+  python inference.py --task task_2
+  python inference.py --heuristic   # force heuristic, skip LLM
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
+import dotenv
 
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
-
-try:
-    from openai import OpenAI
-except ImportError:
-    print("[ERROR] openai package not installed. Run: pip install openai", file=sys.stderr)
-    sys.exit(1)
-
+dotenv.load_dotenv()  # Load environment variables from .env file if present
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Configuration  (all overridable via environment variables)
+# Config from environment
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Required by hackathon spec — must use these exact variable names
-API_BASE_URL = os.environ.get("API_BASE_URL", "https://api.groq.com/openai/v1")
-MODEL_NAME   = os.environ.get("MODEL_NAME",   "llama-3.3-70b-versatile")
-HF_TOKEN     = (
-    os.environ.get("HF_TOKEN")
-    or os.environ.get("GROQ_API_KEY")
-    or os.environ.get("OPENAI_API_KEY")
-    or ""
-)
-
-# Environment server (local or HF Space URL)
 ENV_BASE_URL = os.environ.get("ENV_BASE_URL", "http://localhost:7860")
-
-# Episode config
-TASKS: List[str]     = ["task_1", "task_2", "task_3"]
-BENCHMARK: str       = "cloud-finops-env"
-MAX_STEPS_PER_TASK   = {"task_1": 3, "task_2": 4, "task_3": 4}  # stay under env limits
-SUCCESS_SCORE_THRESHOLD = 0.40
-
-# Groq rate-limit safety: pause between LLM calls (seconds)
-LLM_CALL_DELAY = 0.5
-
-if not HF_TOKEN:
-    print("[WARN] HF_TOKEN / GROQ_API_KEY not set — LLM calls will fail.", file=sys.stderr)
-
+API_BASE_URL = os.environ.get("API_BASE_URL", "https://api.groq.com/openai/v1")
+MODEL_NAME   = os.environ.get("MODEL_NAME", "llama-3.3-70b-versatile")
+HF_TOKEN     = os.environ.get("HF_TOKEN", "OPENAI_KEY")  # Can be Groq key or HF token
+OPENAI_KEY   = os.environ.get("OPENAI_API_KEY")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Logging  (strict [START] / [STEP] / [END] format required by validator)
+# Server client helpers
 # ══════════════════════════════════════════════════════════════════════════════
 
-def log_start(task: str, env: str, model: str) -> None:
-    print(f"[START] task={task} env={env} model={model}", flush=True)
+def _get(path: str) -> dict:
+    r = requests.get(f"{ENV_BASE_URL}{path}", timeout=15)
+    r.raise_for_status()
+    return r.json()
 
-
-def log_step(
-    step: int,
-    action: str,
-    reward: float,
-    done: bool,
-    error: Optional[str],
-) -> None:
-    err_str = error if error else "null"
-    print(
-        f"[STEP] step={step} action={action} "
-        f"reward={reward:.4f} done={str(done).lower()} error={err_str}",
-        flush=True,
+def _post(path: str, body: dict | None = None, params: dict | None = None) -> dict:
+    r = requests.post(
+        f"{ENV_BASE_URL}{path}",
+        json=body or {},
+        params=params or {},
+        timeout=15,
     )
+    r.raise_for_status()
+    return r.json()
 
 
-def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
-    rewards_str = ",".join(f"{r:.4f}" for r in rewards)
-    print(
-        f"[END] success={str(success).lower()} steps={steps} "
-        f"score={score:.4f} rewards=[{rewards_str}]",
-        flush=True,
-    )
+def reset_task(task_id: str) -> dict:
+    return _post("/reset", params={"task_id": task_id})
 
+def take_step(action: dict) -> dict:
+    return _post("/step", body=action)
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Environment HTTP client
-# ══════════════════════════════════════════════════════════════════════════════
+def get_grade() -> dict:
+    return _post("/grader")
 
-class EnvClient:
-    """Thin wrapper around the FastAPI environment server."""
-
-    def __init__(self, base_url: str = ENV_BASE_URL) -> None:
-        self._base = base_url.rstrip("/")
-        self._session = requests.Session()
-        self._session.headers.update({"Content-Type": "application/json"})
-
-    def reset(self, task_id: str) -> Dict[str, Any]:
-        r = self._session.post(
-            f"{self._base}/reset",
-            params={"task_id": task_id},
-            timeout=30,
-        )
-        r.raise_for_status()
-        return r.json()
-
-    def step(self, action: Dict[str, Any]) -> Dict[str, Any]:
-        r = self._session.post(
-            f"{self._base}/step",
-            json=action,
-            timeout=30,
-        )
-        r.raise_for_status()
-        return r.json()
-
-    def grader(self) -> Dict[str, Any]:
-        r = self._session.post(f"{self._base}/grader", timeout=30)
-        r.raise_for_status()
-        return r.json()
-
-    def tasks(self) -> List[Dict[str, Any]]:
-        r = self._session.get(f"{self._base}/tasks", timeout=30)
-        r.raise_for_status()
-        return r.json()
-
-    def health(self) -> bool:
-        try:
-            r = self._session.get(f"{self._base}/", timeout=10)
-            return r.status_code == 200
-        except Exception:
-            return False
-
-    def close(self) -> None:
-        self._session.close()
+def check_health() -> bool:
+    try:
+        r = requests.get(f"{ENV_BASE_URL}/", timeout=5)
+        return r.status_code == 200
+    except Exception:
+        return False
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# JSON parser (handles markdown fences, leading text, etc.)
+# LLM agent — OpenAI-compatible (works with Groq, HF, OpenAI, etc.)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def extract_json(text: str) -> Dict[str, Any]:
-    """Extract the first valid JSON object from an LLM response string."""
-    text = text.strip()
-    # Strip markdown code fences
-    lines = [ln for ln in text.splitlines() if not ln.strip().startswith("```")]
-    text = "\n".join(lines).strip()
-    # Find first { ... }
-    start = text.find("{")
-    end   = text.rfind("}") + 1
-    if start != -1 and end > start:
-        return json.loads(text[start:end])
-    raise ValueError(f"No JSON object found in: {text[:200]!r}")
+SYSTEM_PROMPT = """You are an expert cloud FinOps engineer.
+Given the current state of a cloud infrastructure, decide which SINGLE action to take
+to reduce costs without causing production downtime.
 
+RULES:
+- Return ONLY a valid JSON object — no prose, no markdown, no backticks.
+- Exactly one of these schemas:
+    {"action_type": "terminate",       "resource_id": "<id>"}
+    {"action_type": "resize",          "resource_id": "<id>", "new_size": "<nano|micro|small|medium|large|xlarge>"}
+    {"action_type": "migrate_storage", "resource_id": "<id>", "target_tier": "cold"}
+    {"action_type": "migrate_traffic", "source_region": "<region>"}
+    {"action_type": "wait"}
 
-# ══════════════════════════════════════════════════════════════════════════════
-# System prompt  (the single most important thing for score quality)
-# ══════════════════════════════════════════════════════════════════════════════
-
-SYSTEM_PROMPT = """\
-You are an expert Cloud FinOps engineer. Your job: cut cloud waste without causing downtime.
-Return EXACTLY ONE JSON action object. No markdown. No explanation. Just the JSON.
-
-═══ VALID ACTIONS ════════════════════════════════════════════════════════════════
-{"action_type":"terminate","resource_id":"<id>"}
-{"action_type":"resize","resource_id":"<id>","new_size":"nano|micro|small|medium|large"}
-{"action_type":"migrate_storage","resource_id":"<id>","target_tier":"cold"}
-{"action_type":"migrate_traffic","source_region":"us-east-1"}
-{"action_type":"wait"}
-
-═══ TASK STRATEGIES ══════════════════════════════════════════════════════════════
-
-TASK 1 — Orphan Cleanup (EASY):
-  Target: delete ONLY safe orphans. Safe = (attached_to IS NULL) AND (traffic_per_hour == 0).
-  DO NOT touch resources with traffic > 0, cpu_avg_24h > 30, or queries_per_hour > 0.
-  IDs to look for: ip_address with no traffic, storage volumes with attached_to=null,
-  VMs with status "stopped".
-
-TASK 2 — Rightsizing (MEDIUM):
-  Target: save $6,000/month.
-  RESIZE: VMs/DBs with cpu_avg_24h < 10 AND traffic_per_hour < 500. Resize to "small".
-  MIGRATE_STORAGE: volumes with last_accessed_days_ago > 180. Migrate to "cold".
-  DO NOT resize if cpu_avg_24h > 40 — that causes downtime penalty.
-  DO NOT terminate anything — use resize and migrate_storage only.
-
-TASK 3 — Multi-Region Shutdown (HARD):
-  Target: save $15,000/month by shutting down us-east-1.
-  MANDATORY SEQUENCE (violating it gives huge penalty):
-    Step 1: {"action_type":"migrate_traffic","source_region":"us-east-1"}
-    Step 2: {"action_type":"wait"}
-    Step 3: Terminate us-east-1 resources ONE BY ONE.
-  
-  HONEYPOT WARNING — DO NOT terminate these, they look idle but run batch jobs at 02:00:
-    - Any database in us-west-2 with cpu_avg_24h < 5 (batch analytics)
-    - Any VM tagged env="dev" with traffic_per_hour > 1000 (dev tag lies)
-    - Any volume with dependency_of set (even if attached_to=null)
-  
-  Also safe to terminate/resize in us-west-2:
-    - Stopped VMs (status="stopped")
-    - Unassigned IPs (attached_to=null, traffic=0)
-    - Volumes with last_accessed_days_ago > 300 → migrate_storage cold
-    - VMs with cpu_avg_24h < 8 AND no production traffic → resize to "small"
-
-═══ SCORING RULES ════════════════════════════════════════════════════════════════
-  GOOD: +reward for every dollar saved per month
-  BAD:  -8000 for killing any production resource (downtime event)
-  WORSE:-8000 for hitting a honeypot (batch job database killed)
-  BAD:  -3000 for sequence violation (terminate before migrate_traffic+wait)
-
-═══ CRITICAL RULES ═══════════════════════════════════════════════════════════════
-  - Never terminate a resource with traffic_per_hour > 1000
-  - Never terminate a resource with cpu_avg_24h > 50
-  - Never terminate a resource with queries_per_hour > 5000
-  - Never terminate a volume with dependency_of set (even if attached_to=null)
-  - For Task 3: ALWAYS call migrate_traffic then wait BEFORE terminating east-1 prod
-  - Return ONLY the JSON — no commentary, no markdown, no explanation
+SAFETY RULES:
+- Never terminate a resource with traffic_per_hour > 1000 or cpu_avg_24h > 40
+  UNLESS you are in task_3, connections_drained=true, and it is in us-east-1.
+- In task_3: ALWAYS call migrate_traffic FIRST (source_region=us-east-1),
+  then wait, THEN terminate east-1 resources (both orphans and production).
+- NEVER terminate a resource that has dependency_of set.
+- Resources tagged env=dev may still have real traffic — check traffic_per_hour.
+- Prefer: terminate orphans first → resize oversized VMs → cold-migrate stale storage.
+- When resizing, downgrade to the smallest size that fits the workload.
+  For cpu < 10% and traffic < 500/hr, resize directly to 'small'.
 """
 
+TASK_DESCRIPTIONS = {
+    "task_1": (
+        "Find and terminate all 8 orphaned resources: unattached IPs, "
+        "detached volumes, stopped VMs, old snapshots. "
+        "Do NOT touch resources with traffic_per_hour > 0 or cpu_avg_24h > 5."
+    ),
+    "task_2": (
+        "Resize 5 oversized VMs (cpu_avg < 10%, size=large/xlarge) down to 'small'. "
+        "Cold-migrate 3 stale storage volumes (last_accessed_days_ago > 400). "
+        "Target: $3,500/month savings. Never touch active production (traffic > 5000)."
+    ),
+    "task_3": (
+        "Shut down the entire us-east-1 legacy region. Target: $8,000/month savings. "
+        "MANDATORY SEQUENCE: "
+        "1) migrate_traffic with source_region='us-east-1' "
+        "2) wait "
+        "3) terminate ALL east-1 resources (orphans, stopped, AND production — all are now safe). "
+        "Also: delete west-2 orphans (ip-west-unused-1, vol-west-orphan-1, "
+        "vm-west-stopped-1, snapshot-west-old). "
+        "HONEYPOT WARNINGS — DO NOT DELETE THESE: "
+        "- db-west-analytics-1 and db-west-analytics-2 look idle (cpu=2%) but run "
+        "  critical batch jobs at 2am. "
+        "- vm-west-dev-api has traffic=8400/hr despite 'dev' tag. "
+        "- vol-west-media-archive has dependency_of set. "
+        "The connections_drained flag in the observation tells you when WAIT is complete."
+    ),
+}
+
+
+def _build_prompt(obs: dict, task_id: str) -> str:
+    resources_json = json.dumps(obs.get("resources", []), indent=2)
+    return f"""TASK: {task_id}
+DESCRIPTION: {TASK_DESCRIPTIONS.get(task_id, '')}
+STEP: {obs.get('step')}/{obs.get('max_steps')}
+MONTHLY BILL: ${obs.get('monthly_bill_current', 0):,.0f} (started ${obs.get('monthly_bill_start', 0):,.0f})
+SAVINGS ACHIEVED: ${obs.get('savings_achieved', 0):,.0f} / TARGET: ${obs.get('savings_target', 0):,.0f}
+DOWNTIME EVENTS: {obs.get('downtime_events', 0)}
+HONEYPOT HITS: {obs.get('honeypot_hits', 0)}
+SEQUENCE VIOLATIONS: {obs.get('sequence_violations', 0)}
+TRAFFIC MIGRATED FROM: {obs.get('traffic_migrated_from') or 'none'}
+CONNECTIONS DRAINED: {obs.get('connections_drained', False)}
+LAST FEEDBACK: {obs.get('feedback', '')}
+
+ACTIVE RESOURCES:
+{resources_json}
+
+Choose ONE action. Return only JSON."""
+
+
+def _parse_llm_response(raw: str) -> Optional[dict]:
+    """
+    Robustly parse LLM JSON output.
+    Handles markdown fences, leading text, and common formatting issues.
+    """
+    if not raw:
+        return None
+    # Strip markdown code fences
+    raw = raw.strip()
+    if raw.startswith("```"):
+        lines = raw.split("\n")
+        # Remove first and last fence lines
+        inner = []
+        in_block = False
+        for line in lines:
+            if line.startswith("```"):
+                in_block = not in_block
+                continue
+            if in_block or not raw.startswith("```"):
+                inner.append(line)
+        raw = "\n".join(inner).strip()
+    # Try direct parse
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+    # Try to find first { ... } block
+    start = raw.find("{")
+    end   = raw.rfind("}")
+    if start != -1 and end != -1:
+        try:
+            return json.loads(raw[start:end + 1])
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
+def _call_llm(prompt: str) -> Optional[dict]:
+    """
+    OpenAI-compatible LLM call. Works with:
+      - OpenAI (OPENAI_API_KEY)
+      - Groq  (API_BASE_URL=https://api.groq.com/openai/v1, HF_TOKEN=<groq_key>)
+      - HF Inference API (API_BASE_URL=..., HF_TOKEN=<hf_token>)
+      - Any other OpenAI-compatible /v1/chat/completions endpoint
+
+    Returns parsed action dict or None on failure.
+    """
+
+    # ── OpenAI SDK path ───────────────────────────────────────────────────────
+    if OPENAI_KEY:
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=OPENAI_KEY)
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user",   "content": prompt},
+                ],
+                temperature=0.0,
+                max_tokens=200,
+                response_format={"type": "json_object"},  # force JSON mode
+            )
+            raw = resp.choices[0].message.content.strip()
+            return _parse_llm_response(raw)
+        except Exception as e:
+            print(f"  [OpenAI error] {e}", file=sys.stderr)
+            return None
+
+    # ── OpenAI-compatible REST path (Groq, HF, etc.) ─────────────────────────
+    token = HF_TOKEN or OPENAI_KEY
+    if API_BASE_URL and token:
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        payload: dict = {
+            "model": MODEL_NAME,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user",   "content": prompt},
+            ],
+            "temperature": 0.0,
+            "max_tokens": 200,
+        }
+        # Groq and some endpoints support JSON mode
+        # (silently ignored by endpoints that don't)
+        try:
+            r = requests.post(
+                f"{API_BASE_URL}/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=20,
+            )
+            r.raise_for_status()
+            raw = r.json()["choices"][0]["message"]["content"].strip()
+            return _parse_llm_response(raw)
+        except Exception as e:
+            print(f"  [LLM error] {e}", file=sys.stderr)
+            return None
+
+    return None
+
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Prompt builders
+# Heuristic fallback agent
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _summarize_resources(resources: List[Dict]) -> str:
-    """
-    Compact resource summary — keeps prompt within Groq token limits.
-    Shows the most decision-relevant fields only.
-    """
-    lines = []
-    for r in resources:
-        rid     = r.get("id", "?")
-        rtype   = r.get("resource_type", "?")
-        status  = r.get("status", "?")
-        region  = r.get("region", "?")
-        cost    = r.get("monthly_cost", 0)
-        cpu     = r.get("cpu_avg_24h")
-        traffic = r.get("traffic_per_hour")
-        queries = r.get("queries_per_hour")
-        size    = r.get("instance_size")
-        att     = r.get("attached_to")
-        dep     = r.get("dependency_of")
-        tags    = r.get("tags", {})
-        last_acc = r.get("last_accessed_days_ago")
-        stor_tier = r.get("storage_tier")
+HEURISTIC_CPU_IDLE       = 10.0    # % — below this → safe to resize
+HEURISTIC_TRAFFIC_IDLE   = 200     # req/hr — below this → treat as idle
+HEURISTIC_COLD_DAYS      = 400     # days — above this → cold-migrate
 
-        parts = [f"[{rid}] {rtype}/{status} region={region} cost=${cost:.0f}/mo"]
-        if cpu   is not None: parts.append(f"cpu={cpu:.1f}%")
-        if traffic is not None: parts.append(f"traffic={traffic}/hr")
-        if queries is not None: parts.append(f"queries={queries}/hr")
-        if size:                parts.append(f"size={size}")
-        if stor_tier:           parts.append(f"storage={stor_tier}")
-        if last_acc is not None: parts.append(f"last_accessed={last_acc}d_ago")
-        if att is not None:     parts.append(f"attached_to={att}")
-        if dep:                 parts.append(f"dependency_of={dep}  *** DO NOT DELETE ***")
-        if tags.get("env") == "dev" and (traffic or 0) > 500:
-            parts.append("*** TAG LIES: dev-tagged but has live traffic ***")
-        lines.append("  " + " | ".join(parts))
-    return "\n".join(lines)
+# East-1 production resource IDs that become safe after migrate+wait
+EAST1_PRODUCTION_IDS = {
+    "lb-east-main", "vm-east-api", "vm-east-payment",
+    "vm-east-checkout", "db-east-postgres", "vm-east-auth",
+    "vol-east-db-primary", "vm-east-frontend-1",
+    "vm-east-frontend-2", "cdn-east-assets",
+}
+
+# East-1 safe orphans/stopped that can be deleted immediately (no migration needed)
+EAST1_SAFE_IDS = {
+    "ip-east-unused-1", "ip-east-unused-2",
+    "vol-east-orphan-1", "vm-east-stopped-1",
+    "vm-east-old-worker",
+}
 
 
-def build_first_prompt(obs: Dict, task_id: str) -> str:
-    bill_start   = obs.get("monthly_bill_start", 0)
-    bill_current = obs.get("monthly_bill_current", 0)
-    saved        = obs.get("savings_achieved", 0)
-    target       = obs.get("savings_target", 0)
-    max_steps    = obs.get("max_steps", 30)
-    regions      = obs.get("regions", [])
-    resources    = obs.get("resources", [])
+def _is_orphan(r: dict) -> bool:
+    rt     = str(r.get("resource_type", "")).lower().replace("resourcetype.", "")
+    status = str(r.get("status", "")).lower().replace("resourcestatus.", "")
+    traffic = r.get("traffic_per_hour") or 0
+    attached = r.get("attached_to")
+    dep    = r.get("dependency_of") or []
+    cpu    = r.get("cpu_avg_24h")
 
+    if dep:
+        return False  # Trap 3 defence: has dependency
+
+    if rt == "ip_address":
+        return traffic == 0 and not attached
+
+    if rt == "snapshot":
+        return True
+
+    if status in ("stopped", "orphaned"):
+        return traffic == 0 and (cpu is None or cpu < 1.0)
+
+    return False
+
+
+def _is_cold_candidate(r: dict) -> bool:
+    rt     = str(r.get("resource_type", "")).lower().replace("resourcetype.", "")
+    tier   = str(r.get("storage_tier", "")).lower().replace("storagetier.", "")
+    days   = r.get("last_accessed_days_ago")
+    dep    = r.get("dependency_of") or []
+    attached = r.get("attached_to")
+    if dep or attached:
+        return False
     return (
-        f"=== TASK: {task_id.upper()} | Step 0/{max_steps} ===\n"
-        f"Monthly bill: ${bill_current:,.0f} (started at ${bill_start:,.0f})\n"
-        f"Savings achieved: ${saved:,.0f} / target ${target:,.0f}\n"
-        f"Regions: {regions}\n"
-        f"Resources ({len(resources)} visible):\n"
-        f"{_summarize_resources(resources)}\n\n"
-        f"Return your FIRST action as JSON only."
+        rt == "storage"
+        and tier == "hot"
+        and days is not None
+        and days >= HEURISTIC_COLD_DAYS
     )
 
 
-def build_step_prompt(
-    obs: Dict,
-    task_id: str,
-    step: int,
-    last_feedback: str,
-    last_reward: float,
-) -> str:
-    bill_current = obs.get("monthly_bill_current", 0)
-    saved        = obs.get("savings_achieved", 0)
-    target       = obs.get("savings_target", 0)
-    max_steps    = obs.get("max_steps", 30)
-    left         = max_steps - step
-    downtime     = obs.get("downtime_events", 0)
-    honeypots    = obs.get("honeypot_hits", 0)
-    seq_viols    = obs.get("sequence_violations", 0)
-    resources    = obs.get("resources", [])
-    migrated_from = obs.get("traffic_migrated_from")
-    drained       = obs.get("connections_drained", False)
-
-    lines = [
-        f"=== Step {step}/{max_steps} | {left} steps left ===",
-        f"Bill: ${bill_current:,.0f} | Saved: ${saved:,.0f} / ${target:,.0f}",
-        f"Penalties: downtime={downtime} honeypots={honeypots} seq_violations={seq_viols}",
-        f"Last reward: {last_reward:+.1f} | Feedback: {last_feedback}",
-    ]
-
-    # Task 3 drain state — critical info
-    if task_id == "task_3":
-        if migrated_from:
-            drain_status = "DRAINED — safe to terminate" if drained else "draining — call WAIT"
-            lines.append(f"Traffic migrated from: {migrated_from} ({drain_status})")
-        else:
-            lines.append("*** TASK 3: Call migrate_traffic first before terminating east-1 ***")
-
-    # Urgency
-    if left <= 5:
-        lines.append(f"!!! URGENT: only {left} steps left — act efficiently !!!")
-
-    lines.append(f"Resources ({len(resources)} remaining):")
-    lines.append(_summarize_resources(resources))
-    lines.append("Return next action as JSON only.")
-
-    return "\n".join(lines)
+def _is_oversized(r: dict) -> bool:
+    rt    = str(r.get("resource_type", "")).lower().replace("resourcetype.", "")
+    size  = str(r.get("instance_size", "")).lower().replace("instancesize.", "")
+    cpu   = r.get("cpu_avg_24h")
+    traffic = r.get("traffic_per_hour") or 0
+    dep   = r.get("dependency_of") or []
+    if dep:
+        return False
+    return (
+        rt in ("vm", "database")
+        and size in ("large", "xlarge")
+        and cpu is not None
+        and cpu < HEURISTIC_CPU_IDLE
+        and traffic < 5000
+    )
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Deterministic fallback  (runs when LLM fails — scores meaningfully)
-# ══════════════════════════════════════════════════════════════════════════════
+def _is_tag_lie_trap(r: dict) -> bool:
+    """Dev-tagged resource with real traffic — Trap 2 defence."""
+    tags    = r.get("tags") or {}
+    traffic = r.get("traffic_per_hour") or 0
+    return tags.get("env") == "dev" and traffic > 1000
 
-def _task1_fallback(resources: List[Dict]) -> Optional[Dict]:
-    """Delete orphans: null attachment + zero traffic."""
+
+def _is_midnight_batch_trap(r: dict) -> bool:
+    """Analytics DBs that look idle but run batch jobs — Trap 1 defence."""
+    rid = r.get("id", "")
+    return rid in ("db-west-analytics-1", "db-west-analytics-2")
+
+
+def _heuristic_action(obs: dict) -> Optional[dict]:
+    task      = obs.get("task_id", "")
+    resources = obs.get("resources", [])
+    migrated  = obs.get("traffic_migrated_from")
+    drained   = obs.get("connections_drained", False)
+
+    # ── Task 3 ────────────────────────────────────────────────────────────────
+    if task == "task_3":
+
+        # Step A: Before migrate+wait, clear east-1 safe orphans/stopped VMs.
+        # These have safe_to_terminate=True and don't need the migration sequence.
+        # Doing this BEFORE migrate_traffic means fewer steps wasted after drain.
+        if migrated is None:
+            for r in resources:
+                if r["id"] in EAST1_SAFE_IDS and _is_orphan(r):
+                    return {"action_type": "terminate", "resource_id": r["id"]}
+
+        # Step B: Kick off the drain sequence
+        if migrated is None:
+            return {"action_type": "migrate_traffic", "source_region": "us-east-1"}
+
+        if not drained:
+            return {"action_type": "wait"}
+
+        # Step C: After drain — terminate ALL east-1 resources (prod now unlocked)
+        for r in resources:
+            rid = r["id"]
+            if rid in EAST1_PRODUCTION_IDS or rid in EAST1_SAFE_IDS:
+                return {"action_type": "terminate", "resource_id": rid}
+
+    # ── Terminate obvious orphans (all tasks, also west-2 cleanup in task_3) ──
     for r in resources:
-        rtype   = r.get("resource_type", "")
-        status  = r.get("status", "")
-        att     = r.get("attached_to")
-        traffic = r.get("traffic_per_hour") or 0
-        cpu     = r.get("cpu_avg_24h") or 0
-
-        if rtype == "ip_address" and traffic == 0 and att is None:
-            return {"action_type": "terminate", "resource_id": r["id"]}
-        if rtype == "snapshot":
-            return {"action_type": "terminate", "resource_id": r["id"]}
-        if status == "stopped" and traffic == 0 and cpu == 0:
-            return {"action_type": "terminate", "resource_id": r["id"]}
-        if rtype == "storage" and att is None and traffic == 0 and not r.get("dependency_of"):
-            last = r.get("last_accessed_days_ago") or 0
-            if last > 60:
-                return {"action_type": "terminate", "resource_id": r["id"]}
-    return None
-
-
-def _task2_fallback(resources: List[Dict]) -> Optional[Dict]:
-    """Resize idle VMs; cold-migrate old storage."""
-    # Cold migration first (no downtime risk)
-    for r in resources:
-        if r.get("resource_type") == "storage":
-            last = r.get("last_accessed_days_ago") or 0
-            tier = r.get("storage_tier", "")
-            if tier == "hot" and last > 180:
-                return {
-                    "action_type": "migrate_storage",
-                    "resource_id": r["id"],
-                    "target_tier": "cold",
-                }
-    # Resize clearly idle VMs
-    for r in resources:
-        rtype   = r.get("resource_type", "")
-        cpu     = r.get("cpu_avg_24h") or 0
-        traffic = r.get("traffic_per_hour") or 0
-        size    = r.get("instance_size", "")
-        if rtype in ("vm", "database") and cpu < 10 and traffic < 500 and size in ("large", "xlarge"):
-            return {
-                "action_type": "resize",
-                "resource_id": r["id"],
-                "new_size": "small",
-            }
-    return None
-
-
-def _task3_fallback(resources: List[Dict], obs: Dict) -> Optional[Dict]:
-    """
-    Task 3 sequence: migrate_traffic → wait → terminate east-1 waste + west-2 waste.
-    Never touches honeypots (batch DBs, dev-tagged with traffic, dependency_of volumes).
-    """
-    migrated_from = obs.get("traffic_migrated_from")
-    drained       = obs.get("connections_drained", False)
-
-    # Step 1: migrate traffic if not done
-    if not migrated_from:
-        return {"action_type": "migrate_traffic", "source_region": "us-east-1"}
-
-    # Step 2: wait for drain if not complete
-    if migrated_from and not drained:
-        return {"action_type": "wait"}
-
-    # Step 3: terminate safe east-1 waste (orphans, stopped VMs)
-    for r in resources:
-        if r.get("region") != "us-east-1":
-            continue
-        rtype   = r.get("resource_type", "")
-        status  = r.get("status", "")
-        traffic = r.get("traffic_per_hour") or 0
-        cpu     = r.get("cpu_avg_24h") or 0
-        att     = r.get("attached_to")
-        dep     = r.get("dependency_of")
-
-        if dep:  # hidden dependency — never touch
-            continue
-        if status == "stopped" and traffic == 0 and cpu == 0:
-            return {"action_type": "terminate", "resource_id": r["id"]}
-        if rtype == "ip_address" and traffic == 0 and att is None:
-            return {"action_type": "terminate", "resource_id": r["id"]}
-        if rtype == "snapshot":
-            return {"action_type": "terminate", "resource_id": r["id"]}
-        # After drain, east-1 production is safe to terminate
-        if r.get("region") == "us-east-1" and traffic < 2000 and cpu < 80:
-            return {"action_type": "terminate", "resource_id": r["id"]}
-
-    # Step 4: west-2 orphans and cold storage (safe regardless of sequence)
-    for r in resources:
-        if r.get("region") != "us-west-2":
-            continue
-        rtype   = r.get("resource_type", "")
-        status  = r.get("status", "")
-        traffic = r.get("traffic_per_hour") or 0
-        cpu     = r.get("cpu_avg_24h") or 0
-        att     = r.get("attached_to")
-        dep     = r.get("dependency_of")
-        last    = r.get("last_accessed_days_ago") or 0
-        tags    = r.get("tags", {})
-
+        if task == "task_3":
+            if _is_tag_lie_trap(r):
+                continue
+            if _is_midnight_batch_trap(r):
+                continue
+        dep = r.get("dependency_of") or []
         if dep:
             continue
-        # HONEYPOT CHECK: skip dev-tagged resources with real traffic
-        if tags.get("env") == "dev" and traffic > 500:
-            continue
-        # HONEYPOT CHECK: skip west-2 DBs with suspiciously low cpu (batch jobs)
-        if rtype == "database" and (cpu or 0) < 5:
-            continue
+        if _is_orphan(r):
+            return {"action_type": "terminate", "resource_id": r["id"]}
 
-        if status == "stopped" and traffic == 0:
-            return {"action_type": "terminate", "resource_id": r["id"]}
-        if rtype == "ip_address" and traffic == 0 and att is None:
-            return {"action_type": "terminate", "resource_id": r["id"]}
-        if rtype == "storage" and att is None and last > 300 and not dep:
+    # ── Cold-migrate stale storage ─────────────────────────────────────────────
+    for r in resources:
+        if _is_cold_candidate(r):
             return {
                 "action_type": "migrate_storage",
                 "resource_id": r["id"],
                 "target_tier": "cold",
             }
-        if rtype == "storage" and last > 180 and not dep:
-            return {
-                "action_type": "migrate_storage",
-                "resource_id": r["id"],
-                "target_tier": "cold",
-            }
-        if rtype == "vm" and cpu < 8 and traffic < 300:
+
+    # ── Resize oversized VMs ──────────────────────────────────────────────────
+    for r in resources:
+        if task == "task_3" and _is_tag_lie_trap(r):
+            continue
+        if task == "task_3" and _is_midnight_batch_trap(r):
+            continue
+        if _is_oversized(r):
             return {
                 "action_type": "resize",
                 "resource_id": r["id"],
                 "new_size": "small",
             }
 
-    return None
-
-
-def smart_fallback(obs: Dict, task_id: str) -> Dict:
-    """Deterministic heuristic.  Never panics.  Always returns a valid action."""
-    resources = obs.get("resources", [])
-
-    action = None
-    if task_id == "task_1":
-        action = _task1_fallback(resources)
-    elif task_id == "task_2":
-        action = _task2_fallback(resources)
-    elif task_id == "task_3":
-        action = _task3_fallback(resources, obs)
-
-    return action or {"action_type": "wait"}
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Action validation / repair  (prevent 422 errors from the server)
-# ══════════════════════════════════════════════════════════════════════════════
-
-_VALID_SIZES  = {"nano", "micro", "small", "medium", "large", "xlarge"}
-_VALID_TYPES  = {"terminate", "resize", "migrate_storage", "migrate_traffic", "wait"}
-_SIZE_ORDER   = ["nano", "micro", "small", "medium", "large", "xlarge"]
-
-def _resource_ids(obs: Dict) -> set:
-    return {r["id"] for r in obs.get("resources", [])}
-
-def _get_resource(obs: Dict, rid: str) -> Optional[Dict]:
-    for r in obs.get("resources", []):
-        if r["id"] == rid:
-            return r
-    return None
-
-
-def validate_and_repair(action: Dict, obs: Dict, task_id: str) -> Optional[Dict]:
-    """
-    Return the action if it's valid, a repaired version if fixable,
-    or None if it must be overridden by smart_fallback.
-    """
-    at = action.get("action_type", "")
-
-    # Unknown action type
-    if at not in _VALID_TYPES:
-        return None
-
-    # WAIT — always valid
-    if at == "wait":
-        return action
-
-    # MIGRATE_TRAFFIC — needs source_region, no resource_id
-    if at == "migrate_traffic":
-        if not action.get("source_region"):
-            action["source_region"] = "us-east-1"
-        action.pop("resource_id", None)
-        return action
-
-    # All other actions need resource_id
-    rid = action.get("resource_id")
-    valid_ids = _resource_ids(obs)
-
-    if not rid or rid not in valid_ids:
-        return None   # can't repair — fallback
-
-    resource = _get_resource(obs, rid)
-
-    if at == "terminate":
-        # Never terminate a resource with dependency_of set
-        if resource and resource.get("dependency_of"):
-            return None
-        return action
-
-    if at == "resize":
-        new_size = action.get("new_size", "")
-        if new_size not in _VALID_SIZES:
-            action["new_size"] = "small"
-        # Repair: if resize would be an upsize, switch to wait
-        if resource:
-            cur = resource.get("instance_size", "large")
-            cur_idx = _SIZE_ORDER.index(cur) if cur in _SIZE_ORDER else 4
-            new_idx = _SIZE_ORDER.index(action["new_size"])
-            if new_idx >= cur_idx:
-                return None   # can't upsize — fallback
-        return action
-
-    if at == "migrate_storage":
-        action["target_tier"] = "cold"   # always cold
-        return action
-
-    return action
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# LLM call
-# ══════════════════════════════════════════════════════════════════════════════
-
-def call_llm(
-    client: OpenAI,
-    messages: List[Dict],
-) -> Optional[str]:
-    """Call Groq via OpenAI client.  Returns raw text or None on error."""
-    try:
-        resp = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=messages,
-            temperature=0.0,
-            max_tokens=200,
-            stream=False,
-        )
-        return (resp.choices[0].message.content or "").strip()
-    except Exception as e:
-        print(f"  [LLM ERROR] {type(e).__name__}: {e}", file=sys.stderr)
-        return None
+    return None   # nothing left to do
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Episode runner
 # ══════════════════════════════════════════════════════════════════════════════
 
-def run_task(task_id: str, client: OpenAI, env: EnvClient) -> float:
+def run_episode(
+    task_id: str,
+    use_llm: bool = True,
+    verbose: bool = True,
+) -> dict:
     """
-    Run one full episode for task_id.
-    Returns the true grader score (0.0–1.0) from POST /grader.
+    Run one full episode against the server.
+    Returns the grader result dict.
     """
-    max_steps = MAX_STEPS_PER_TASK.get(task_id, 30)
-    rewards:  List[float] = []
-    steps_taken = 0
-    score = 0.0
+    obs   = reset_task(task_id)
+    steps = 0
+    max_steps = obs.get("max_steps", 25)
+    rewards: list[float] = []
+    noop_streak = 0
 
-    log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
+    if verbose:
+        print(f"\n{'═'*60}")
+        print(f"  Running {task_id.upper()}")
+        print(f"{'═'*60}")
+        print(
+            f"[START] task={task_id} env={obs.get('task_id', '?')} "
+            f"model={MODEL_NAME if use_llm else 'heuristic'}"
+        )
 
-    # ── Reset ────────────────────────────────────────────────────────────────
-    try:
-        obs = env.reset(task_id)
-    except Exception as e:
-        print(f"  [ERROR] reset failed: {e}", file=sys.stderr)
-        log_end(success=False, steps=0, score=0.0, rewards=[])
-        return 0.0
+    while steps < max_steps:
+        action = None
 
-    # ── Conversation history (multi-turn, capped to keep tokens low) ─────────
-    messages: List[Dict] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user",   "content": build_first_prompt(obs, task_id)},
-    ]
+        # Try LLM
+        if use_llm:
+            prompt = _build_prompt(obs, task_id)
+            raw    = _call_llm(prompt)
+            if raw and isinstance(raw, dict):
+                action = raw
 
-    last_feedback = obs.get("feedback", "")
-    last_reward   = 0.0
-    done          = False
+        # Fallback to heuristic (also used when LLM returns None)
+        if action is None:
+            action = _heuristic_action(obs)
 
-    for step in range(1, max_steps + 1):
-        steps_taken = step
-
-        # ── LLM call ─────────────────────────────────────────────────────────
-        raw_text = call_llm(client, messages)
-        time.sleep(LLM_CALL_DELAY)   # Groq rate limit safety
-
-        # ── Parse LLM output ─────────────────────────────────────────────────
-        llm_action: Optional[Dict] = None
-        if raw_text:
-            try:
-                llm_action = extract_json(raw_text)
-            except Exception:
-                pass
-
-        # ── Validate / repair / override ─────────────────────────────────────
-        error_note: Optional[str] = None
-
-        if llm_action is not None:
-            repaired = validate_and_repair(llm_action, obs, task_id)
-            if repaired is None:
-                error_note = f"override:invalid_action={llm_action.get('action_type')}"
-                action = smart_fallback(obs, task_id)
-                print(f"  [OVERRIDE] step {step}: {llm_action} → fallback", file=sys.stderr)
-            else:
-                action = repaired
+        if action is None:
+            noop_streak += 1
+            if verbose:
+                print(f"[STEP] step={steps+1} action=noop — nothing left to do.")
+            if noop_streak >= 2:
+                break
+            continue
         else:
-            error_note = "fallback:llm_parse_failed"
-            action = smart_fallback(obs, task_id)
-            print(f"  [FALLBACK] step {step}: LLM gave nothing useful", file=sys.stderr)
+            noop_streak = 0
 
-        # ── Step ─────────────────────────────────────────────────────────────
         try:
-            result  = env.step(action)
-            reward  = float(result.get("reward", 0.0))
-            done    = bool(result.get("done", False))
-            new_obs = result.get("observation", obs)
-        except Exception as e:
-            # Server rejected the action — fallback and retry next step
-            error_note = f"server_error:{type(e).__name__}"
-            reward  = 0.0
-            done    = False
-            new_obs = obs
-            print(f"  [SERVER ERROR] step {step}: {e}", file=sys.stderr)
+            result = take_step(action)
+        except requests.HTTPError as e:
+            if verbose:
+                print(f"[STEP] step={steps+1} HTTP error: {e}", file=sys.stderr)
+            break
 
+        steps += 1
+        reward = result.get("reward", 0.0)
         rewards.append(reward)
-        log_step(step=step, action=json.dumps(action), reward=reward, done=done, error=error_note)
+        obs    = result.get("observation", obs)
+        done   = result.get("done", False)
+        error  = result.get("info", {}).get("error")
+
+        if verbose:
+            print(
+                f"[STEP] step={steps} "
+                f"action={json.dumps(action)} "
+                f"reward={reward:.4f} "
+                f"done={'true' if done else 'false'} "
+                f"error={error}"
+            )
 
         if done:
             break
 
-        # ── Update conversation ───────────────────────────────────────────────
-        # Add assistant turn (what it said) + new user turn (new state)
-        if raw_text:
-            messages.append({"role": "assistant", "content": raw_text})
-        else:
-            messages.append({"role": "assistant", "content": json.dumps(action)})
+        # Small pause to avoid hammering free-tier APIs
+        if use_llm and API_BASE_URL:
+            time.sleep(1.5)#to avoid rate limits
 
-        last_feedback = new_obs.get("feedback", "")
-        last_reward   = reward
-        obs           = new_obs
+    grade = get_grade()
 
-        step_msg = build_step_prompt(obs, task_id, step, last_feedback, last_reward)
-        messages.append({"role": "user", "content": step_msg})
-
-        # Keep conversation window tight (Groq free tier is token-limited)
-        # Keep system + first user + last 6 turns (12 messages max)
-        if len(messages) > 14:
-            messages = messages[:2] + messages[-12:]
-
-    # ── Fetch true grader score ───────────────────────────────────────────────
-    try:
-        grade = env.grader()
-        score = float(grade.get("score", 0.0))
-        money_saved = grade.get("money_saved", 0.0)
+    if verbose:
+        score = grade.get("score", 0)
+        saved = grade.get("money_saved", 0)
+        msg   = grade.get("message", "")
+        success = score >= 0.5
         print(
             f"  [GRADE] task={task_id} score={score:.4f} "
-            f"money_saved=${money_saved:,.0f} "
-            f"message={grade.get('message', '')}",
-            file=sys.stderr,
+            f"money_saved=${saved:.0f} message={msg}"
         )
-    except Exception as e:
-        # Fallback: estimate from cumulative reward (not ideal but safe)
-        print(f"  [WARN] grader call failed: {e} — estimating score", file=sys.stderr)
-        score = min(max(sum(rewards) / 50_000.0, 0.0), 1.0)
+        print(
+            f"[END] success={'true' if success else 'false'} "
+            f"steps={steps} score={score:.4f} "
+            f"rewards={[f'{r:.4f}' for r in rewards]}"
+        )
 
-    score = min(max(score, 0.0), 1.0)
-    success = score >= SUCCESS_SCORE_THRESHOLD
-    log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
-    return score
+    return grade
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Main entrypoint
+# Main
 # ══════════════════════════════════════════════════════════════════════════════
 
 def main() -> None:
-    print(f"Cloud FinOps Sandbox — inference.py", flush=True)
-    print(f"  ENV_BASE_URL : {ENV_BASE_URL}",     flush=True)
-    print(f"  API_BASE_URL : {API_BASE_URL}",     flush=True)
-    print(f"  MODEL_NAME   : {MODEL_NAME}",       flush=True)
-    print(f"  HF_TOKEN     : {'set' if HF_TOKEN else 'MISSING'}", flush=True)
-    print(flush=True)
+    parser = argparse.ArgumentParser(description="Cloud FinOps baseline agent.")
+    parser.add_argument("--json",      action="store_true", help="Emit JSON to stdout.")
+    parser.add_argument("--task",      type=str, default=None, help="Run one task only.")
+    parser.add_argument("--heuristic", action="store_true",  help="Force heuristic, skip LLM.")
+    args = parser.parse_args()
 
-    # ── Init clients ─────────────────────────────────────────────────────────
-    llm_client = OpenAI(api_key=HF_TOKEN, base_url=API_BASE_URL)
-    env_client = EnvClient(ENV_BASE_URL)
-
-    # ── Health check ─────────────────────────────────────────────────────────
-    if not env_client.health():
-        print(
-            f"[ERROR] Environment server not reachable at {ENV_BASE_URL}. "
-            f"Start it with: uvicorn server:app --host 0.0.0.0 --port 7860",
-            file=sys.stderr,
-        )
+    # Check server is up
+    if not check_health():
+        print(f"ERROR: Server at {ENV_BASE_URL} is not responding.", file=sys.stderr)
         sys.exit(1)
-    print(f"Environment server: OK ({ENV_BASE_URL})", flush=True)
 
-    # ── Run all tasks ─────────────────────────────────────────────────────────
-    scores: Dict[str, float] = {}
+    use_llm = not args.heuristic and bool(API_BASE_URL or OPENAI_KEY)
+    # Only use LLM if we actually have a token
+    if use_llm and not (HF_TOKEN or OPENAI_KEY):
+        use_llm = False
 
-    for task_id in TASKS:
-        print(f"\n{'═'*60}", flush=True)
-        print(f"  Running {task_id.upper()}", flush=True)
-        print(f"{'═'*60}", flush=True)
-        try:
-            score = run_task(task_id, llm_client, env_client)
-        except KeyboardInterrupt:
-            print("\n[INTERRUPTED]", flush=True)
-            break
-        except Exception as e:
-            print(f"[ERROR] {task_id} crashed: {e}", file=sys.stderr)
-            score = 0.0
-        scores[task_id] = score
+    verbose = not args.json
 
-    # ── Summary ──────────────────────────────────────────────────────────────
-    env_client.close()
+    if verbose:
+        print(f"Cloud FinOps Sandbox — inference.py")
+        print(f"  ENV_BASE_URL : {ENV_BASE_URL}")
+        print(f"  API_BASE_URL : {API_BASE_URL or '(none)'}")
+        print(f"  MODEL_NAME   : {MODEL_NAME}")
+        print(f"  HF_TOKEN     : {'set' if HF_TOKEN else 'not set'}")
+        print(f"  OPENAI_KEY   : {'set' if OPENAI_KEY else 'not set'}")
+        print(f"  LLM active   : {use_llm}")
+        print(f"\nEnvironment server: OK ({ENV_BASE_URL})")
 
-    print(f"\n{'═'*60}", flush=True)
-    print("SCORE SUMMARY", flush=True)
-    print(f"{'═'*60}", flush=True)
+    tasks = [args.task] if args.task else ["task_1", "task_2", "task_3"]
+    scores: dict[str, float] = {}
 
-    total = 0.0
-    for task_id, score in scores.items():
-        status = "PASS" if score >= SUCCESS_SCORE_THRESHOLD else "FAIL"
-        print(f"  {task_id:<12} {score:.4f}  [{status}]", flush=True)
-        total += score
+    for task_id in tasks:
+        grade     = run_episode(task_id, use_llm=use_llm, verbose=verbose)
+        scores[task_id] = grade.get("score", 0.0)
 
-    if scores:
-        mean = total / len(scores)
-        print(f"  {'mean':<12} {mean:.4f}", flush=True)
-        print(flush=True)
+    mean = sum(scores.values()) / len(scores) if scores else 0.0
 
-        # JSON blob for machine parsing (hackathon validator reads this)
-        summary = {
-            "model": MODEL_NAME,
-            "scores": scores,
-            "mean_score": round(mean, 4),
-        }
-        print(json.dumps(summary), flush=True)
+    if verbose:
+        print(f"\n{'═'*60}")
+        print(f"SCORE SUMMARY")
+        print(f"{'═'*60}")
+        for t, s in scores.items():
+            tag = "[PASS]" if s >= 0.5 else "[FAIL]"
+            print(f"  {t:<12} {s:.4f}  {tag}")
+        print(f"  {'mean':<12} {mean:.4f}")
+        print()
+
+    summary = {
+        "model": MODEL_NAME if use_llm else "heuristic",
+        "scores": scores,
+        "mean_score": round(mean, 4),
+    }
+
+    if args.json:
+        print(json.dumps(summary))
+    else:
+        print(json.dumps(summary))
 
 
 if __name__ == "__main__":

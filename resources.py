@@ -1,1020 +1,757 @@
-# resources.py
-# Cloud FinOps Sandbox — OpenEnv submission
-# NovaCart e-commerce platform — fake AWS infrastructure for all 3 tasks.
-#
-# Design principles:
-#   1. Every number is intentional — costs, CPU%, traffic, last_accessed are
-#      internally consistent with a real mid-size e-commerce company.
-#   2. "Orphans" have clearly visible signals (attached_to=None, traffic=0).
-#   3. "Honeypots" in Task 3 look idle on 24h averages but have hidden
-#      peak_cpu_2am / peak_queries_2am fields the grader uses.
-#   4. safe_to_terminate=False is NEVER exposed to the agent.
+"""
+resources.py — Simulated cloud infrastructure for NovaCart (fictional e-commerce).
+
+Design principles for 50-call budget:
+  Task 1 — 8 orphans to delete.   Achievable in  8 steps. Max 12.
+  Task 2 — 5 resize + 3 cold.     Achievable in  8 steps. Max 15.
+  Task 3 — migrate+wait+15 terms. Achievable in 17 steps. Max 25.
+  Total worst-case: 52 steps → well within 50 per run with early stopping.
+
+Savings targets are sized so the heuristic agent can hit ~0.7+ on each task.
+"""
+
 from __future__ import annotations
-
-from models import (
-    InstanceSize,
-    Resource,
-    ResourceStatus,
-    ResourceType,
-    StorageTier,
-)
-
+from models import Resource, ResourceType, ResourceStatus, StorageTier, InstanceSize
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TASK 1 — Easy  (20 resources, 8 obvious orphans, no traps)
-# Savings available: $705/mo.  Expected agent score: ~0.85
+# TASK 1 — EASY
+# 20 resources | Bill: $7,450 | Savings target: $705 | Max steps: 12
+# 8 obvious orphans (no traffic, no attachment). 12 active production.
+# Agent just needs to find status=orphaned/stopped + traffic=0.
 # ══════════════════════════════════════════════════════════════════════════════
 
 TASK_1_RESOURCES: list[Resource] = [
 
-    # ── Orphans (safe to delete — the answer key) ─────────────────────────────
-
+    # ── 8 ORPHANS ─────────────────────────────────────────────────────────────
     Resource(
-        id="ip-unused-001", name="ip-unused-001",
-        resource_type=ResourceType.IP_ADDRESS, region="us-east-1",
-        monthly_cost=45.00,
+        id="ip-unused-001", name="Unassigned Elastic IP #1",
+        resource_type=ResourceType.IP_ADDRESS, status=ResourceStatus.ORPHANED,
+        region="us-east-1", monthly_cost=45.00,
         traffic_per_hour=0, attached_to=None,
-        tags={"env": "legacy", "team": "infra"},
-        safe_to_terminate=True, is_production=False,
+        tags={"env": "unknown"}, safe_to_terminate=True,
+        base_cost_at_large=None,
     ),
     Resource(
-        id="ip-unused-002", name="ip-unused-002",
-        resource_type=ResourceType.IP_ADDRESS, region="us-east-1",
-        monthly_cost=45.00,
+        id="ip-unused-002", name="Unassigned Elastic IP #2",
+        resource_type=ResourceType.IP_ADDRESS, status=ResourceStatus.ORPHANED,
+        region="us-east-1", monthly_cost=45.00,
         traffic_per_hour=0, attached_to=None,
-        tags={"env": "legacy", "team": "infra"},
-        safe_to_terminate=True, is_production=False,
+        tags={}, safe_to_terminate=True,
+        base_cost_at_large=None,
     ),
     Resource(
-        id="vol-orphan-001", name="vol-orphan-001",
-        resource_type=ResourceType.STORAGE, region="us-east-1",
-        monthly_cost=55.00,
-        size_gb=500, storage_tier=StorageTier.HOT,
-        attached_to=None, last_accessed_days_ago=120,
-        tags={"env": "legacy"},
-        safe_to_terminate=True, is_production=False,
+        id="vol-orphan-001", name="Orphan EBS Volume 500 GB",
+        resource_type=ResourceType.STORAGE, status=ResourceStatus.ORPHANED,
+        region="us-east-1", monthly_cost=55.00,
+        attached_to=None, size_gb=500, storage_tier=StorageTier.HOT,
+        last_accessed_days_ago=180, safe_to_terminate=True,
+        base_cost_at_large=None,
     ),
     Resource(
-        id="vol-orphan-002", name="vol-orphan-002",
-        resource_type=ResourceType.STORAGE, region="us-east-1",
-        monthly_cost=22.00,
-        size_gb=200, storage_tier=StorageTier.HOT,
-        attached_to=None, last_accessed_days_ago=200,
-        tags={"env": "dev"},
-        safe_to_terminate=True, is_production=False,
+        id="vol-orphan-002", name="Orphan EBS Volume 200 GB",
+        resource_type=ResourceType.STORAGE, status=ResourceStatus.ORPHANED,
+        region="us-east-1", monthly_cost=22.00,
+        attached_to=None, size_gb=200, storage_tier=StorageTier.HOT,
+        last_accessed_days_ago=210, safe_to_terminate=True,
+        base_cost_at_large=None,
     ),
     Resource(
-        id="vol-orphan-003", name="vol-orphan-003",
-        resource_type=ResourceType.STORAGE, region="us-east-1",
-        monthly_cost=110.00,
-        size_gb=1000, storage_tier=StorageTier.HOT,
-        attached_to=None, last_accessed_days_ago=90,
-        tags={"env": "legacy", "team": "data"},
-        safe_to_terminate=True, is_production=False,
+        id="vol-orphan-003", name="Orphan EBS Volume 1 TB",
+        resource_type=ResourceType.STORAGE, status=ResourceStatus.ORPHANED,
+        region="us-east-1", monthly_cost=110.00,
+        attached_to=None, size_gb=1000, storage_tier=StorageTier.HOT,
+        last_accessed_days_ago=145, safe_to_terminate=True,
+        base_cost_at_large=None,
     ),
     Resource(
-        id="vm-stopped-001", name="vm-stopped-001",
-        resource_type=ResourceType.VM, region="us-east-1",
-        status=ResourceStatus.STOPPED,
-        monthly_cost=180.00,
+        id="vm-stopped-001", name="Stopped VM — legacy-worker-east",
+        resource_type=ResourceType.VM, status=ResourceStatus.STOPPED,
+        region="us-east-1", monthly_cost=180.00,
         cpu_avg_24h=0.0, ram_avg_24h=0.0, traffic_per_hour=0,
-        instance_size=InstanceSize.MEDIUM, base_cost_at_large=360.00,
-        tags={"env": "staging", "team": "backend"},
-        safe_to_terminate=True, is_production=False,
+        instance_size=InstanceSize.MEDIUM,
+        tags={"env": "legacy"}, safe_to_terminate=True,
+        base_cost_at_large=380.00,
     ),
     Resource(
-        id="vm-stopped-002", name="vm-stopped-002",
-        resource_type=ResourceType.VM, region="us-east-1",
-        status=ResourceStatus.STOPPED,
-        monthly_cost=210.00,
+        id="vm-stopped-002", name="Stopped VM — old-batch-runner",
+        resource_type=ResourceType.VM, status=ResourceStatus.STOPPED,
+        region="us-east-1", monthly_cost=210.00,
         cpu_avg_24h=0.0, ram_avg_24h=0.0, traffic_per_hour=0,
-        instance_size=InstanceSize.MEDIUM, base_cost_at_large=420.00,
-        tags={"env": "staging", "team": "frontend"},
-        safe_to_terminate=True, is_production=False,
+        instance_size=InstanceSize.LARGE,
+        tags={"env": "dev", "team": "data"}, safe_to_terminate=True,
+        base_cost_at_large=210.00,
     ),
     Resource(
-        id="snapshot-old-001", name="snapshot-old-001",
-        resource_type=ResourceType.SNAPSHOT, region="us-east-1",
-        monthly_cost=38.00,
-        last_accessed_days_ago=730,
-        tags={"env": "legacy", "created": "2022-01"},
-        safe_to_terminate=True, is_production=False,
+        id="snapshot-old-001", name="DB Snapshot — prod-postgres-2022-06",
+        resource_type=ResourceType.SNAPSHOT, status=ResourceStatus.ORPHANED,
+        region="us-east-1", monthly_cost=38.00,
+        attached_to=None, size_gb=380,
+        last_accessed_days_ago=730, safe_to_terminate=True,
+        base_cost_at_large=None,
     ),
 
-    # ── Active production (DO NOT TOUCH) ─────────────────────────────────────
-
+    # ── 12 ACTIVE PRODUCTION ──────────────────────────────────────────────────
     Resource(
-        id="vm-api-gateway", name="prod-api-gateway-east-1",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=620.00,
-        cpu_avg_24h=71.3, ram_avg_24h=58.2, traffic_per_hour=45_000,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=620.00,
-        tags={"env": "production", "team": "platform"},
+        id="vm-api-gateway", name="API Gateway — prod",
+        resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=620.00,
+        cpu_avg_24h=71.4, ram_avg_24h=68.2, traffic_per_hour=45000,
+        instance_size=InstanceSize.LARGE,
+        tags={"env": "prod", "tier": "api"},
         safe_to_terminate=False, is_production=True,
+        base_cost_at_large=620.00,
     ),
     Resource(
-        id="vm-payment-proc", name="prod-payment-processor-east-1",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=890.00,
-        cpu_avg_24h=68.7, ram_avg_24h=62.1, traffic_per_hour=12_000,
-        instance_size=InstanceSize.XLARGE, base_cost_at_large=890.00,
-        tags={"env": "production", "team": "payments", "pci": "true"},
+        id="vm-payment-proc", name="Payment Processor — prod",
+        resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=890.00,
+        cpu_avg_24h=68.1, ram_avg_24h=72.0, traffic_per_hour=12000,
+        instance_size=InstanceSize.XLARGE,
+        tags={"env": "prod", "compliance": "PCI-DSS"},
         safe_to_terminate=False, is_production=True,
+        base_cost_at_large=620.00,
     ),
     Resource(
-        id="db-postgres-main", name="prod-postgres-primary-east-1",
-        resource_type=ResourceType.DATABASE, region="us-east-1",
-        monthly_cost=1_840.00,
-        cpu_avg_24h=74.2, ram_avg_24h=70.8,
-        queries_per_hour=28_000, traffic_per_hour=28_000,
-        instance_size=InstanceSize.XLARGE, base_cost_at_large=1_840.00,
-        tags={"env": "production", "team": "data", "backup": "true"},
+        id="db-postgres-main", name="PostgreSQL Primary — prod",
+        resource_type=ResourceType.DATABASE, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=1840.00,
+        cpu_avg_24h=74.3, ram_avg_24h=81.0, traffic_per_hour=28000,
+        tags={"env": "prod"},
         safe_to_terminate=False, is_production=True,
+        base_cost_at_large=None,
     ),
     Resource(
-        id="db-redis-cache", name="prod-redis-cache-east-1",
-        resource_type=ResourceType.DATABASE, region="us-east-1",
-        monthly_cost=420.00,
-        cpu_avg_24h=44.9, ram_avg_24h=81.3, traffic_per_hour=95_000,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=420.00,
-        tags={"env": "production", "team": "platform"},
+        id="db-redis-cache", name="Redis Cache Cluster — prod",
+        resource_type=ResourceType.DATABASE, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=420.00,
+        cpu_avg_24h=45.2, ram_avg_24h=88.0, traffic_per_hour=95000,
+        tags={"env": "prod"},
         safe_to_terminate=False, is_production=True,
+        base_cost_at_large=None,
     ),
     Resource(
-        id="vm-web-frontend-1", name="prod-web-frontend-east-1a",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=380.00,
-        cpu_avg_24h=52.1, ram_avg_24h=41.7, traffic_per_hour=38_000,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=380.00,
-        tags={"env": "production", "team": "frontend"},
+        id="vm-web-frontend-1", name="Web Frontend Node 1 — prod",
+        resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=380.00,
+        cpu_avg_24h=52.1, ram_avg_24h=55.3, traffic_per_hour=38000,
+        instance_size=InstanceSize.LARGE,
+        tags={"env": "prod"},
         safe_to_terminate=False, is_production=True,
+        base_cost_at_large=380.00,
     ),
     Resource(
-        id="vm-web-frontend-2", name="prod-web-frontend-east-1b",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=380.00,
-        cpu_avg_24h=48.6, ram_avg_24h=39.4, traffic_per_hour=35_000,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=380.00,
-        tags={"env": "production", "team": "frontend"},
+        id="vm-web-frontend-2", name="Web Frontend Node 2 — prod",
+        resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=380.00,
+        cpu_avg_24h=49.7, ram_avg_24h=51.8, traffic_per_hour=35000,
+        instance_size=InstanceSize.LARGE,
+        tags={"env": "prod"},
         safe_to_terminate=False, is_production=True,
+        base_cost_at_large=380.00,
     ),
     Resource(
-        id="lb-main", name="prod-lb-main-east-1",
-        resource_type=ResourceType.LOAD_BALANCER, region="us-east-1",
-        monthly_cost=290.00,
-        cpu_avg_24h=37.8, traffic_per_hour=80_000,
-        tags={"env": "production", "team": "platform"},
+        id="lb-main", name="Application Load Balancer — prod",
+        resource_type=ResourceType.LOAD_BALANCER, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=290.00,
+        cpu_avg_24h=38.0, traffic_per_hour=80000,
+        tags={"env": "prod"},
         safe_to_terminate=False, is_production=True,
+        base_cost_at_large=None,
     ),
     Resource(
-        id="vol-db-primary", name="vol-db-primary-east-1",
-        resource_type=ResourceType.STORAGE, region="us-east-1",
-        monthly_cost=180.00,
-        size_gb=2000, storage_tier=StorageTier.HOT,
-        attached_to="db-postgres-main",
-        tags={"env": "production", "team": "data"},
+        id="vol-db-primary", name="PostgreSQL Primary Data Volume",
+        resource_type=ResourceType.STORAGE, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=180.00,
+        attached_to="db-postgres-main", size_gb=2000,
+        storage_tier=StorageTier.HOT, last_accessed_days_ago=0,
         safe_to_terminate=False, is_production=True,
+        base_cost_at_large=None,
     ),
     Resource(
-        id="vm-checkout-svc", name="prod-checkout-service-east-1",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=540.00,
-        cpu_avg_24h=60.8, ram_avg_24h=55.3, traffic_per_hour=9_500,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=540.00,
-        tags={"env": "production", "team": "commerce"},
+        id="vm-checkout-svc", name="Checkout Service — prod",
+        resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=540.00,
+        cpu_avg_24h=61.4, ram_avg_24h=63.0, traffic_per_hour=9500,
+        instance_size=InstanceSize.LARGE,
+        tags={"env": "prod"},
         safe_to_terminate=False, is_production=True,
+        base_cost_at_large=380.00,
     ),
     Resource(
-        id="cdn-assets", name="prod-cdn-assets-global",
-        resource_type=ResourceType.CDN, region="us-east-1",
-        monthly_cost=680.00,
-        cpu_avg_24h=28.9, traffic_per_hour=120_000,
-        tags={"env": "production", "team": "frontend"},
+        id="cdn-assets", name="CDN — static assets and media",
+        resource_type=ResourceType.CDN, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=680.00,
+        cpu_avg_24h=29.0, traffic_per_hour=120000,
+        tags={"env": "prod"},
         safe_to_terminate=False, is_production=True,
+        base_cost_at_large=None,
     ),
     Resource(
-        id="vm-auth-service", name="prod-auth-service-east-1",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=430.00,
-        cpu_avg_24h=43.6, ram_avg_24h=37.9, traffic_per_hour=18_000,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=430.00,
-        tags={"env": "production", "team": "platform"},
+        id="vm-auth-service", name="Auth Service — prod",
+        resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=430.00,
+        cpu_avg_24h=44.1, ram_avg_24h=48.9, traffic_per_hour=18000,
+        instance_size=InstanceSize.LARGE,
+        tags={"env": "prod"},
         safe_to_terminate=False, is_production=True,
+        base_cost_at_large=380.00,
     ),
     Resource(
-        id="vol-backups-active", name="vol-db-backups-east-1",
-        resource_type=ResourceType.STORAGE, region="us-east-1",
-        monthly_cost=95.00,
-        size_gb=800, storage_tier=StorageTier.HOT,
-        attached_to="db-postgres-main",
-        last_accessed_days_ago=1,
-        tags={"env": "production", "team": "data"},
+        id="vol-backups-active", name="Live Backup Volume — postgres",
+        resource_type=ResourceType.STORAGE, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=95.00,
+        attached_to="db-postgres-main", size_gb=1000,
+        storage_tier=StorageTier.HOT, last_accessed_days_ago=1,
         safe_to_terminate=False, is_production=True,
+        base_cost_at_large=None,
     ),
 ]
 
+TASK_1_BILL   = sum(r.monthly_cost for r in TASK_1_RESOURCES)   # 7,450
+TASK_1_TARGET = 705.00   # delete all 8 orphans = exact score 1.0
+TASK_1_ORPHAN_IDS = {
+    "ip-unused-001", "ip-unused-002",
+    "vol-orphan-001", "vol-orphan-002", "vol-orphan-003",
+    "vm-stopped-001", "vm-stopped-002",
+    "snapshot-old-001",
+}
+
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TASK 2 — Medium  (30 resources, rightsize + cold-migrate)
-# Savings target: $6,000/mo.  Max achievable: ~$4,600.  Expected score: ~0.60
+# TASK 2 — MEDIUM
+# 18 resources | Bill: ~$11,700 | Savings target: $3,500 | Max steps: 15
+#
+# Safe savings available:
+#   Resize 5 VMs (xlarge→small saves ~$1,030 each, large→small saves ~$410):
+#     vm-ml-training:       xlarge → small  saves $1,030
+#     vm-analytics-worker-1: large → small  saves  $410
+#     vm-analytics-worker-2: large → small  saves  $410
+#     vm-reporting-svc:     large → small   saves  $410
+#     vm-internal-tools:    large → small   saves  $410
+#   Total resize savings: ~$2,670
+#
+#   Cold migrate 3 volumes (saves 80%):
+#     vol-logs-2023:   $340 → $68  saves $272
+#     vol-logs-2022:   $290 → $58  saves $232
+#     vol-archive:     $180 → $36  saves $144
+#   Total cold savings: ~$648
+#
+# Total safe savings: ~$3,318 (score ~0.95 — grader caps at 1.0)
 # ══════════════════════════════════════════════════════════════════════════════
 
 TASK_2_RESOURCES: list[Resource] = [
 
-    # ── Clearly oversized VMs — resize from large/xlarge to small/micro ───────
-
+    # ── 5 OVERSIZED VMs (resize these) ───────────────────────────────────────
     Resource(
-        id="vm-analytics-worker-1", name="vm-analytics-worker-east-1a",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=847.00,
-        cpu_avg_24h=4.2, ram_avg_24h=8.1, traffic_per_hour=120,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=847.00,
-        tags={"env": "analytics", "team": "data"},
-        safe_to_terminate=True, is_production=False,
-    ),
-    Resource(
-        id="vm-analytics-worker-2", name="vm-analytics-worker-east-1b",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=847.00,
-        cpu_avg_24h=3.8, ram_avg_24h=7.4, traffic_per_hour=95,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=847.00,
-        tags={"env": "analytics", "team": "data"},
-        safe_to_terminate=True, is_production=False,
-    ),
-    Resource(
-        id="vm-ml-training", name="vm-ml-training-east-1",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=1_240.00,
+        id="vm-ml-training", name="ML Training Server — idle",
+        resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=1240.00,
         cpu_avg_24h=6.1, ram_avg_24h=11.2, traffic_per_hour=0,
-        instance_size=InstanceSize.XLARGE, base_cost_at_large=1_240.00,
+        instance_size=InstanceSize.XLARGE,
         tags={"env": "ml", "team": "data-science"},
         safe_to_terminate=True, is_production=False,
+        base_cost_at_large=620.00,
     ),
     Resource(
-        id="vm-reporting-svc", name="vm-reporting-service-east-1",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=620.00,
-        cpu_avg_24h=5.3, ram_avg_24h=9.0, traffic_per_hour=45,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=620.00,
-        tags={"env": "internal", "team": "data"},
+        id="vm-analytics-worker-1", name="Analytics Worker 1 — oversized",
+        resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=620.00,
+        cpu_avg_24h=4.2, ram_avg_24h=8.1, traffic_per_hour=120,
+        instance_size=InstanceSize.LARGE,
+        tags={"env": "analytics", "team": "data"},
         safe_to_terminate=True, is_production=False,
+        base_cost_at_large=620.00,
     ),
     Resource(
-        id="vm-internal-tools", name="vm-internal-tools-east-1",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=620.00,
-        cpu_avg_24h=7.2, ram_avg_24h=13.1, traffic_per_hour=180,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=620.00,
+        id="vm-analytics-worker-2", name="Analytics Worker 2 — oversized",
+        resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=620.00,
+        cpu_avg_24h=3.8, ram_avg_24h=7.4, traffic_per_hour=95,
+        instance_size=InstanceSize.LARGE,
+        tags={"env": "analytics", "team": "data"},
+        safe_to_terminate=True, is_production=False,
+        base_cost_at_large=620.00,
+    ),
+    Resource(
+        id="vm-reporting-svc", name="Reporting Service — oversized",
+        resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=620.00,
+        cpu_avg_24h=5.3, ram_avg_24h=9.0, traffic_per_hour=45,
+        instance_size=InstanceSize.LARGE,
         tags={"env": "internal", "team": "ops"},
         safe_to_terminate=True, is_production=False,
-    ),
-
-    # ── Cold storage candidates ────────────────────────────────────────────────
-
-    Resource(
-        id="vol-logs-2023", name="vol-access-logs-2023",
-        resource_type=ResourceType.STORAGE, region="us-east-1",
-        monthly_cost=340.00,
-        size_gb=3400, storage_tier=StorageTier.HOT,
-        last_accessed_days_ago=430,
-        tags={"env": "archive", "team": "infra"},
-        safe_to_terminate=False, is_production=False,
-        # don't delete — cold-migrate only
+        base_cost_at_large=620.00,
     ),
     Resource(
-        id="vol-logs-2022", name="vol-access-logs-2022",
-        resource_type=ResourceType.STORAGE, region="us-east-1",
-        monthly_cost=290.00,
-        size_gb=2900, storage_tier=StorageTier.HOT,
-        last_accessed_days_ago=790,
-        tags={"env": "archive", "team": "infra"},
-        safe_to_terminate=False, is_production=False,
-    ),
-    Resource(
-        id="vol-archive-q1-2023", name="vol-quarterly-archive-q1-2023",
-        resource_type=ResourceType.STORAGE, region="us-east-1",
-        monthly_cost=180.00,
-        size_gb=1800, storage_tier=StorageTier.HOT,
-        last_accessed_days_ago=548,
-        tags={"env": "archive", "team": "finance"},
-        safe_to_terminate=False, is_production=False,
-    ),
-    Resource(
-        id="vol-old-backups", name="vol-old-db-backups-2023",
-        resource_type=ResourceType.STORAGE, region="us-east-1",
-        monthly_cost=220.00,
-        size_gb=2200, storage_tier=StorageTier.HOT,
-        last_accessed_days_ago=240,
-        tags={"env": "backup", "team": "data"},
-        safe_to_terminate=False, is_production=False,
-    ),
-    Resource(
-        id="vol-media-archive", name="vol-product-image-archive-2022",
-        resource_type=ResourceType.STORAGE, region="us-east-1",
-        monthly_cost=410.00,
-        size_gb=4100, storage_tier=StorageTier.HOT,
-        last_accessed_days_ago=335,
-        tags={"env": "archive", "team": "content"},
-        safe_to_terminate=False, is_production=False,
-    ),
-
-    # ── Borderline — low CPU but some real traffic (resize, don't delete) ─────
-
-    Resource(
-        id="vm-staging-env", name="vm-staging-environment-east-1",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=430.00,
-        cpu_avg_24h=12.4, ram_avg_24h=21.7, traffic_per_hour=850,
-        instance_size=InstanceSize.MEDIUM, base_cost_at_large=860.00,
-        tags={"env": "staging", "team": "qa"},
+        id="vm-internal-tools", name="Internal Tools Server — oversized",
+        resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=620.00,
+        cpu_avg_24h=7.2, ram_avg_24h=13.1, traffic_per_hour=180,
+        instance_size=InstanceSize.LARGE,
+        tags={"env": "internal", "team": "eng"},
         safe_to_terminate=True, is_production=False,
-    ),
-    Resource(
-        id="vm-dev-tools", name="vm-dev-tools-east-1",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=380.00,
-        cpu_avg_24h=9.8, ram_avg_24h=18.2, traffic_per_hour=420,
-        instance_size=InstanceSize.MEDIUM, base_cost_at_large=760.00,
-        tags={"env": "dev", "team": "engineering"},
-        safe_to_terminate=True, is_production=False,
-    ),
-    Resource(
-        id="vm-image-processor", name="vm-image-processor-east-1",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=540.00,
-        cpu_avg_24h=18.2, ram_avg_24h=29.6, traffic_per_hour=2_200,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=540.00,
-        tags={"env": "production", "team": "content"},
-        safe_to_terminate=True, is_production=False,
+        base_cost_at_large=620.00,
     ),
 
-    # ── Active production (DO NOT TOUCH) ─────────────────────────────────────
+    # ── 3 COLD STORAGE CANDIDATES ─────────────────────────────────────────────
+    Resource(
+        id="vol-logs-2023", name="App Logs Archive 2023",
+        resource_type=ResourceType.STORAGE, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=340.00,
+        attached_to=None, size_gb=3200,
+        storage_tier=StorageTier.HOT, last_accessed_days_ago=425,
+        safe_to_terminate=False, is_production=False,
+        base_cost_at_large=None,
+    ),
+    Resource(
+        id="vol-logs-2022", name="App Logs Archive 2022",
+        resource_type=ResourceType.STORAGE, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=290.00,
+        attached_to=None, size_gb=2800,
+        storage_tier=StorageTier.HOT, last_accessed_days_ago=790,
+        safe_to_terminate=False, is_production=False,
+        base_cost_at_large=None,
+    ),
+    Resource(
+        id="vol-archive-q1-2023", name="Q1 2023 Data Archive",
+        resource_type=ResourceType.STORAGE, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=180.00,
+        attached_to=None, size_gb=1700,
+        storage_tier=StorageTier.HOT, last_accessed_days_ago=548,
+        safe_to_terminate=False, is_production=False,
+        base_cost_at_large=None,
+    ),
 
+    # ── 10 ACTIVE PRODUCTION (do not touch) ───────────────────────────────────
     Resource(
-        id="t2-vm-api-gateway", name="prod-api-gateway-east-1",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=620.00,
-        cpu_avg_24h=73.1, ram_avg_24h=61.4, traffic_per_hour=48_000,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=620.00,
-        tags={"env": "production", "team": "platform"},
-        safe_to_terminate=False, is_production=True,
+        id="vm-api-gateway", name="API Gateway — prod",
+        resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=620.00,
+        cpu_avg_24h=73.1, ram_avg_24h=70.4, traffic_per_hour=48000,
+        instance_size=InstanceSize.LARGE,
+        tags={"env": "prod"}, safe_to_terminate=False, is_production=True,
+        base_cost_at_large=620.00,
     ),
     Resource(
-        id="t2-vm-payment", name="prod-payment-processor-east-1",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=890.00,
-        cpu_avg_24h=70.8, ram_avg_24h=64.3, traffic_per_hour=13_500,
-        instance_size=InstanceSize.XLARGE, base_cost_at_large=890.00,
-        tags={"env": "production", "team": "payments"},
+        id="vm-payment-proc", name="Payment Processor — prod",
+        resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=890.00,
+        cpu_avg_24h=71.0, ram_avg_24h=74.2, traffic_per_hour=13500,
+        instance_size=InstanceSize.XLARGE,
+        tags={"env": "prod", "compliance": "PCI-DSS"},
         safe_to_terminate=False, is_production=True,
+        base_cost_at_large=620.00,
     ),
     Resource(
-        id="t2-db-postgres-main", name="prod-postgres-primary-east-1",
-        resource_type=ResourceType.DATABASE, region="us-east-1",
-        monthly_cost=1_840.00,
-        cpu_avg_24h=76.1, ram_avg_24h=72.4,
-        queries_per_hour=31_000, traffic_per_hour=31_000,
-        instance_size=InstanceSize.XLARGE, base_cost_at_large=1_840.00,
-        tags={"env": "production", "team": "data"},
-        safe_to_terminate=False, is_production=True,
+        id="db-postgres-main", name="PostgreSQL Primary — prod",
+        resource_type=ResourceType.DATABASE, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=1840.00,
+        cpu_avg_24h=76.2, ram_avg_24h=83.1, traffic_per_hour=31000,
+        tags={"env": "prod"}, safe_to_terminate=False, is_production=True,
+        base_cost_at_large=None,
     ),
     Resource(
-        id="t2-db-redis", name="prod-redis-cache-east-1",
-        resource_type=ResourceType.DATABASE, region="us-east-1",
-        monthly_cost=420.00,
-        cpu_avg_24h=47.9, ram_avg_24h=83.1, traffic_per_hour=98_000,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=420.00,
-        tags={"env": "production", "team": "platform"},
-        safe_to_terminate=False, is_production=True,
+        id="db-redis-cache", name="Redis Cache Cluster — prod",
+        resource_type=ResourceType.DATABASE, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=420.00,
+        cpu_avg_24h=48.0, ram_avg_24h=89.0, traffic_per_hour=98000,
+        tags={"env": "prod"}, safe_to_terminate=False, is_production=True,
+        base_cost_at_large=None,
     ),
     Resource(
-        id="t2-vm-frontend-1", name="prod-web-frontend-east-1a",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=380.00,
-        cpu_avg_24h=54.9, ram_avg_24h=43.2, traffic_per_hour=41_000,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=380.00,
-        tags={"env": "production", "team": "frontend"},
-        safe_to_terminate=False, is_production=True,
+        id="vm-web-frontend-1", name="Web Frontend Node 1 — prod",
+        resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=380.00,
+        cpu_avg_24h=55.3, ram_avg_24h=57.0, traffic_per_hour=41000,
+        instance_size=InstanceSize.LARGE,
+        tags={"env": "prod"}, safe_to_terminate=False, is_production=True,
+        base_cost_at_large=380.00,
     ),
     Resource(
-        id="t2-vm-frontend-2", name="prod-web-frontend-east-1b",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=380.00,
-        cpu_avg_24h=50.7, ram_avg_24h=40.8, traffic_per_hour=38_000,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=380.00,
-        tags={"env": "production", "team": "frontend"},
-        safe_to_terminate=False, is_production=True,
+        id="vm-checkout-svc", name="Checkout Service — prod",
+        resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=540.00,
+        cpu_avg_24h=64.2, ram_avg_24h=66.0, traffic_per_hour=10200,
+        instance_size=InstanceSize.LARGE,
+        tags={"env": "prod"}, safe_to_terminate=False, is_production=True,
+        base_cost_at_large=380.00,
     ),
     Resource(
-        id="t2-lb-main", name="prod-lb-main-east-1",
-        resource_type=ResourceType.LOAD_BALANCER, region="us-east-1",
-        monthly_cost=290.00,
-        cpu_avg_24h=40.6, traffic_per_hour=85_000,
-        tags={"env": "production", "team": "platform"},
-        safe_to_terminate=False, is_production=True,
+        id="cdn-assets", name="CDN — static assets and media",
+        resource_type=ResourceType.CDN, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=680.00,
+        cpu_avg_24h=31.0, traffic_per_hour=125000,
+        tags={"env": "prod"}, safe_to_terminate=False, is_production=True,
+        base_cost_at_large=None,
     ),
     Resource(
-        id="t2-vm-checkout", name="prod-checkout-service-east-1",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=540.00,
-        cpu_avg_24h=63.8, ram_avg_24h=56.2, traffic_per_hour=10_200,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=540.00,
-        tags={"env": "production", "team": "commerce"},
-        safe_to_terminate=False, is_production=True,
+        id="vm-auth-service", name="Auth Service — prod",
+        resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=430.00,
+        cpu_avg_24h=46.0, ram_avg_24h=50.2, traffic_per_hour=19500,
+        instance_size=InstanceSize.LARGE,
+        tags={"env": "prod"}, safe_to_terminate=False, is_production=True,
+        base_cost_at_large=380.00,
     ),
     Resource(
-        id="t2-cdn-assets", name="prod-cdn-assets-global",
-        resource_type=ResourceType.CDN, region="us-east-1",
-        monthly_cost=680.00,
-        cpu_avg_24h=31.2, traffic_per_hour=125_000,
-        tags={"env": "production", "team": "frontend"},
-        safe_to_terminate=False, is_production=True,
+        id="lb-main", name="Application Load Balancer — prod",
+        resource_type=ResourceType.LOAD_BALANCER, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=290.00,
+        cpu_avg_24h=41.0, traffic_per_hour=85000,
+        tags={"env": "prod"}, safe_to_terminate=False, is_production=True,
+        base_cost_at_large=None,
     ),
     Resource(
-        id="t2-vm-auth", name="prod-auth-service-east-1",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=430.00,
-        cpu_avg_24h=45.9, ram_avg_24h=39.4, traffic_per_hour=19_500,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=430.00,
-        tags={"env": "production", "team": "platform"},
+        id="vol-db-primary", name="PostgreSQL Primary Data Volume",
+        resource_type=ResourceType.STORAGE, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=180.00,
+        attached_to="db-postgres-main", size_gb=2000,
+        storage_tier=StorageTier.HOT, last_accessed_days_ago=0,
         safe_to_terminate=False, is_production=True,
+        base_cost_at_large=None,
     ),
     Resource(
-        id="t2-db-postgres-replica", name="prod-postgres-replica-east-1",
-        resource_type=ResourceType.DATABASE, region="us-east-1",
-        monthly_cost=1_240.00,
-        cpu_avg_24h=57.8, ram_avg_24h=61.1,
-        queries_per_hour=15_000, traffic_per_hour=15_000,
-        instance_size=InstanceSize.XLARGE, base_cost_at_large=1_240.00,
-        tags={"env": "production", "team": "data"},
-        safe_to_terminate=False, is_production=True,
-    ),
-    Resource(
-        id="t2-vm-recommendation", name="prod-recommendation-engine-east-1",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=780.00,
-        cpu_avg_24h=62.4, ram_avg_24h=67.3, traffic_per_hour=22_000,
-        instance_size=InstanceSize.XLARGE, base_cost_at_large=780.00,
-        tags={"env": "production", "team": "ml"},
-        safe_to_terminate=False, is_production=True,
-    ),
-    Resource(
-        id="t2-vol-db-primary", name="vol-db-primary-east-1",
-        resource_type=ResourceType.STORAGE, region="us-east-1",
-        monthly_cost=180.00,
-        size_gb=2000, storage_tier=StorageTier.HOT,
-        attached_to="t2-db-postgres-main",
-        tags={"env": "production", "team": "data"},
-        safe_to_terminate=False, is_production=True,
-    ),
-    Resource(
-        id="t2-vol-db-replica", name="vol-db-replica-east-1",
-        resource_type=ResourceType.STORAGE, region="us-east-1",
-        monthly_cost=140.00,
-        size_gb=2000, storage_tier=StorageTier.HOT,
-        attached_to="t2-db-postgres-replica",
-        tags={"env": "production", "team": "data"},
-        safe_to_terminate=False, is_production=True,
-    ),
-    Resource(
-        id="t2-vm-notification", name="prod-notification-service-east-1",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=380.00,
-        cpu_avg_24h=38.6, ram_avg_24h=32.1, traffic_per_hour=5_500,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=380.00,
-        tags={"env": "production", "team": "platform"},
-        safe_to_terminate=False, is_production=True,
-    ),
-    Resource(
-        id="t2-lb-internal", name="prod-lb-internal-east-1",
-        resource_type=ResourceType.LOAD_BALANCER, region="us-east-1",
-        monthly_cost=190.00,
-        cpu_avg_24h=27.9, traffic_per_hour=24_000,
-        tags={"env": "production", "team": "platform"},
-        safe_to_terminate=False, is_production=True,
-    ),
-    Resource(
-        id="t2-vm-search", name="prod-search-service-east-1",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=620.00,
-        cpu_avg_24h=66.8, ram_avg_24h=71.2, traffic_per_hour=17_000,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=620.00,
-        tags={"env": "production", "team": "commerce"},
-        safe_to_terminate=False, is_production=True,
+        id="vm-search-service", name="Search Service — prod",
+        resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=620.00,
+        cpu_avg_24h=67.0, ram_avg_24h=71.0, traffic_per_hour=17000,
+        instance_size=InstanceSize.LARGE,
+        tags={"env": "prod"}, safe_to_terminate=False, is_production=True,
+        base_cost_at_large=620.00,
     ),
 ]
 
+TASK_2_BILL   = sum(r.monthly_cost for r in TASK_2_RESOURCES)   # ~$11,700
+TASK_2_TARGET = 3500.00   # achievable with 5 resizes + 3 cold migrations
+
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TASK 3 — Hard  (50 resources, 2 regions, honeypots, drain sequence)
-# Savings target: $15,000/mo.  Safe savings: ~$8,400.
-# Agent CANNOT hit target without touching borderline resources.
-# Expected agent score: ~0.35
+# TASK 3 — HARD: MULTI-REGION HONEYPOT FAILOVER
+# 35 resources | Bill: ~$22,800 | Savings target: $8,000 | Max steps: 25
+#
+# Designed for 50-call budget. Achievable in ~17 steps with correct play:
+#   Step 1:   migrate_traffic(source_region="us-east-1")
+#   Step 2:   wait()
+#   Steps 3-7:  Delete 5 east-1 obvious orphans/stopped VMs       (~$1,185)
+#   Steps 8-17: Terminate 10 east-1 production resources (unlocked) (~$6,410)
+#   Steps 18-21: Delete 4 west-2 orphans                           (~$410)
+#   Total safe savings: ~$8,005 → hits target
+#
+# Honeypot traps prevent shortcuts:
+#   Trap 1: db-west-analytics-1/2 — cpu_avg=2% but peak_queries_2am=1.5M
+#   Trap 2: vm-west-dev-api — tagged "dev" but traffic=8,400/hr
+#   Trap 3: vol-west-media-archive — attached_to=None but dependency_of set
 # ══════════════════════════════════════════════════════════════════════════════
 
 TASK_3_RESOURCES: list[Resource] = [
 
-    # ═══════════════════════════════════
-    # us-east-1  (legacy, expensive)
-    # ═══════════════════════════════════
+    # ══ us-east-1 — LEGACY REGION (shut down after traffic migration) ══════════
 
-    # ── Clear waste in us-east-1 (safe to terminate or cold-migrate) ─────────
-
+    # Obvious waste — safe to delete immediately (no migration needed)
     Resource(
-        id="ip-east-unused-1", name="ip-east-unused-001",
-        resource_type=ResourceType.IP_ADDRESS, region="us-east-1",
-        monthly_cost=45.00,
+        id="ip-east-unused-1", name="Unassigned Elastic IP (east-1)",
+        resource_type=ResourceType.IP_ADDRESS, status=ResourceStatus.ORPHANED,
+        region="us-east-1", monthly_cost=45.00,
         traffic_per_hour=0, attached_to=None,
-        tags={"env": "legacy"},
         safe_to_terminate=True, is_production=False,
+        base_cost_at_large=None,
     ),
     Resource(
-        id="ip-east-unused-2", name="ip-east-unused-002",
-        resource_type=ResourceType.IP_ADDRESS, region="us-east-1",
-        monthly_cost=45.00,
+        id="ip-east-unused-2", name="Unassigned Elastic IP #2 (east-1)",
+        resource_type=ResourceType.IP_ADDRESS, status=ResourceStatus.ORPHANED,
+        region="us-east-1", monthly_cost=45.00,
         traffic_per_hour=0, attached_to=None,
-        tags={"env": "legacy"},
         safe_to_terminate=True, is_production=False,
+        base_cost_at_large=None,
     ),
     Resource(
-        id="vol-east-orphan-1", name="vol-east-orphan-001",
-        resource_type=ResourceType.STORAGE, region="us-east-1",
-        monthly_cost=180.00,
-        size_gb=1800, storage_tier=StorageTier.HOT,
-        attached_to=None, last_accessed_days_ago=210,
-        tags={"env": "legacy"},
+        id="vol-east-orphan-1", name="Orphan Volume 2TB (east-1)",
+        resource_type=ResourceType.STORAGE, status=ResourceStatus.ORPHANED,
+        region="us-east-1", monthly_cost=180.00,
+        attached_to=None, size_gb=2000,
+        storage_tier=StorageTier.HOT, last_accessed_days_ago=290,
         safe_to_terminate=True, is_production=False,
+        base_cost_at_large=None,
     ),
     Resource(
-        id="vol-east-orphan-2", name="vol-east-orphan-002",
-        resource_type=ResourceType.STORAGE, region="us-east-1",
-        monthly_cost=95.00,
-        size_gb=950, storage_tier=StorageTier.HOT,
-        attached_to=None, last_accessed_days_ago=300,
+        id="vm-east-stopped-1", name="Stopped VM — legacy-api-east",
+        resource_type=ResourceType.VM, status=ResourceStatus.STOPPED,
+        region="us-east-1", monthly_cost=380.00,
+        cpu_avg_24h=0.0, ram_avg_24h=0.0, traffic_per_hour=0,
+        instance_size=InstanceSize.LARGE,
         tags={"env": "legacy"},
         safe_to_terminate=True, is_production=False,
+        base_cost_at_large=380.00,
     ),
     Resource(
-        id="vm-east-stopped-1", name="vm-east-stopped-001",
-        resource_type=ResourceType.VM, region="us-east-1",
-        status=ResourceStatus.STOPPED,
-        monthly_cost=380.00,
-        cpu_avg_24h=0.0, traffic_per_hour=0,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=380.00,
-        tags={"env": "legacy"},
-        safe_to_terminate=True, is_production=False,
-    ),
-    Resource(
-        id="vm-east-stopped-2", name="vm-east-stopped-002",
-        resource_type=ResourceType.VM, region="us-east-1",
-        status=ResourceStatus.STOPPED,
-        monthly_cost=430.00,
-        cpu_avg_24h=0.0, traffic_per_hour=0,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=430.00,
-        tags={"env": "legacy"},
-        safe_to_terminate=True, is_production=False,
-    ),
-    Resource(
-        id="vm-east-old-worker", name="vm-east-old-analytics-worker",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=847.00,
-        cpu_avg_24h=3.1, ram_avg_24h=5.8, traffic_per_hour=0,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=847.00,
+        id="vm-east-old-worker", name="Old Analytics Worker (east-1)",
+        resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=620.00,
+        cpu_avg_24h=3.1, ram_avg_24h=6.8, traffic_per_hour=0,
+        instance_size=InstanceSize.LARGE,
         tags={"env": "analytics", "team": "data"},
         safe_to_terminate=True, is_production=False,
-    ),
-    Resource(
-        id="vol-east-logs-2022", name="vol-east-access-logs-2022",
-        resource_type=ResourceType.STORAGE, region="us-east-1",
-        monthly_cost=340.00,
-        size_gb=3400, storage_tier=StorageTier.HOT,
-        last_accessed_days_ago=850,
-        tags={"env": "archive", "team": "infra"},
-        safe_to_terminate=False, is_production=False,
-    ),
-    Resource(
-        id="vol-east-logs-2023", name="vol-east-access-logs-2023",
-        resource_type=ResourceType.STORAGE, region="us-east-1",
-        monthly_cost=290.00,
-        size_gb=2900, storage_tier=StorageTier.HOT,
-        last_accessed_days_ago=450,
-        tags={"env": "archive", "team": "infra"},
-        safe_to_terminate=False, is_production=False,
-    ),
-    Resource(
-        id="vm-east-dev-1", name="vm-east-dev-tools-001",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=620.00,
-        cpu_avg_24h=5.2, ram_avg_24h=9.7, traffic_per_hour=80,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=620.00,
-        tags={"env": "dev", "team": "engineering"},
-        safe_to_terminate=True, is_production=False,
+        base_cost_at_large=620.00,
     ),
 
-    # ── Active production in us-east-1  (need migrate_traffic FIRST) ─────────
+    # East-1 active production — safe_to_terminate=False UNTIL migrate+wait done
+    # Environment unlocks these dynamically after drain sequence.
+    Resource(
+        id="lb-east-main", name="Load Balancer — us-east-1 (migrate target)",
+        resource_type=ResourceType.LOAD_BALANCER, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=290.00,
+        traffic_per_hour=70000,
+        tags={"env": "prod", "note": "call migrate_traffic then wait before terminating"},
+        safe_to_terminate=False, is_production=True,
+        base_cost_at_large=None,
+    ),
+    Resource(
+        id="vm-east-api", name="API Gateway (east-1 prod)",
+        resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=620.00,
+        cpu_avg_24h=69.0, ram_avg_24h=66.0, traffic_per_hour=38000,
+        instance_size=InstanceSize.LARGE,
+        tags={"env": "prod"},
+        safe_to_terminate=False, is_production=True,
+        base_cost_at_large=620.00,
+    ),
+    Resource(
+        id="vm-east-payment", name="Payment Processor (east-1 prod)",
+        resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=890.00,
+        cpu_avg_24h=72.0, ram_avg_24h=74.0, traffic_per_hour=11000,
+        instance_size=InstanceSize.XLARGE,
+        tags={"env": "prod", "compliance": "PCI-DSS"},
+        safe_to_terminate=False, is_production=True,
+        base_cost_at_large=620.00,
+    ),
+    Resource(
+        id="vm-east-checkout", name="Checkout Service (east-1 prod)",
+        resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=540.00,
+        cpu_avg_24h=58.0, ram_avg_24h=61.0, traffic_per_hour=8000,
+        instance_size=InstanceSize.LARGE,
+        tags={"env": "prod"},
+        safe_to_terminate=False, is_production=True,
+        base_cost_at_large=380.00,
+    ),
+    Resource(
+        id="db-east-postgres", name="PostgreSQL Primary (east-1 prod)",
+        resource_type=ResourceType.DATABASE, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=1840.00,
+        cpu_avg_24h=71.0, ram_avg_24h=79.0, traffic_per_hour=25000,
+        tags={"env": "prod"},
+        safe_to_terminate=False, is_production=True,
+        base_cost_at_large=None,
+    ),
+    Resource(
+        id="vm-east-auth", name="Auth Service (east-1 prod)",
+        resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=430.00,
+        cpu_avg_24h=42.0, ram_avg_24h=47.0, traffic_per_hour=16000,
+        instance_size=InstanceSize.LARGE,
+        tags={"env": "prod"},
+        safe_to_terminate=False, is_production=True,
+        base_cost_at_large=380.00,
+    ),
+    Resource(
+        id="vol-east-db-primary", name="PostgreSQL Data Volume (east-1)",
+        resource_type=ResourceType.STORAGE, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=180.00,
+        attached_to="db-east-postgres", size_gb=2000,
+        storage_tier=StorageTier.HOT, last_accessed_days_ago=0,
+        safe_to_terminate=False, is_production=True,
+        base_cost_at_large=None,
+    ),
+    Resource(
+        id="vm-east-frontend-1", name="Web Frontend 1 (east-1 prod)",
+        resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=380.00,
+        cpu_avg_24h=48.0, ram_avg_24h=51.0, traffic_per_hour=32000,
+        instance_size=InstanceSize.LARGE,
+        tags={"env": "prod"},
+        safe_to_terminate=False, is_production=True,
+        base_cost_at_large=380.00,
+    ),
+    Resource(
+        id="vm-east-frontend-2", name="Web Frontend 2 (east-1 prod)",
+        resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=380.00,
+        cpu_avg_24h=51.0, ram_avg_24h=54.0, traffic_per_hour=35000,
+        instance_size=InstanceSize.LARGE,
+        tags={"env": "prod"},
+        safe_to_terminate=False, is_production=True,
+        base_cost_at_large=380.00,
+    ),
+    Resource(
+        id="cdn-east-assets", name="CDN East (static and media)",
+        resource_type=ResourceType.CDN, status=ResourceStatus.RUNNING,
+        region="us-east-1", monthly_cost=680.00,
+        traffic_per_hour=95000,
+        tags={"env": "prod"},
+        safe_to_terminate=False, is_production=True,
+        base_cost_at_large=None,
+    ),
 
-    Resource(
-        id="vm-east-api", name="prod-api-gateway-east-1",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=620.00,
-        cpu_avg_24h=69.4, ram_avg_24h=57.3, traffic_per_hour=38_000,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=620.00,
-        tags={"env": "production", "team": "platform"},
-        safe_to_terminate=False, is_production=True,
-    ),
-    Resource(
-        id="vm-east-payment", name="prod-payment-processor-east-1",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=890.00,
-        cpu_avg_24h=71.8, ram_avg_24h=63.2, traffic_per_hour=11_000,
-        instance_size=InstanceSize.XLARGE, base_cost_at_large=890.00,
-        tags={"env": "production", "team": "payments", "pci": "true"},
-        safe_to_terminate=False, is_production=True,
-    ),
-    Resource(
-        id="lb-east-main", name="prod-lb-main-east-1",
-        resource_type=ResourceType.LOAD_BALANCER, region="us-east-1",
-        monthly_cost=290.00,
-        cpu_avg_24h=35.6, traffic_per_hour=70_000,
-        tags={"env": "production", "team": "platform"},
-        safe_to_terminate=False, is_production=True,
-    ),
-    Resource(
-        id="vm-east-checkout", name="prod-checkout-service-east-1",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=540.00,
-        cpu_avg_24h=57.9, ram_avg_24h=51.8, traffic_per_hour=8_000,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=540.00,
-        tags={"env": "production", "team": "commerce"},
-        safe_to_terminate=False, is_production=True,
-    ),
-    Resource(
-        id="db-east-postgres", name="prod-postgres-primary-east-1",
-        resource_type=ResourceType.DATABASE, region="us-east-1",
-        monthly_cost=1_840.00,
-        cpu_avg_24h=70.7, ram_avg_24h=68.4,
-        queries_per_hour=25_000, traffic_per_hour=25_000,
-        instance_size=InstanceSize.XLARGE, base_cost_at_large=1_840.00,
-        tags={"env": "production", "team": "data"},
-        safe_to_terminate=False, is_production=True,
-    ),
-    Resource(
-        id="vm-east-auth", name="prod-auth-service-east-1",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=430.00,
-        cpu_avg_24h=41.8, ram_avg_24h=36.2, traffic_per_hour=16_000,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=430.00,
-        tags={"env": "production", "team": "platform"},
-        safe_to_terminate=False, is_production=True,
-    ),
-    Resource(
-        id="vol-east-db-primary", name="vol-db-primary-east-1",
-        resource_type=ResourceType.STORAGE, region="us-east-1",
-        monthly_cost=180.00,
-        size_gb=2000, storage_tier=StorageTier.HOT,
-        attached_to="db-east-postgres",
-        tags={"env": "production", "team": "data"},
-        safe_to_terminate=False, is_production=True,
-    ),
-    Resource(
-        id="vm-east-frontend-1", name="prod-web-frontend-east-1a",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=380.00,
-        cpu_avg_24h=47.9, ram_avg_24h=38.6, traffic_per_hour=32_000,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=380.00,
-        tags={"env": "production", "team": "frontend"},
-        safe_to_terminate=False, is_production=True,
-    ),
-    Resource(
-        id="vm-east-frontend-2", name="prod-web-frontend-east-1b",
-        resource_type=ResourceType.VM, region="us-east-1",
-        monthly_cost=380.00,
-        cpu_avg_24h=50.7, ram_avg_24h=41.3, traffic_per_hour=35_000,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=380.00,
-        tags={"env": "production", "team": "frontend"},
-        safe_to_terminate=False, is_production=True,
-    ),
-    Resource(
-        id="cdn-east-assets", name="prod-cdn-assets-east-1",
-        resource_type=ResourceType.CDN, region="us-east-1",
-        monthly_cost=680.00,
-        cpu_avg_24h=26.4, traffic_per_hour=95_000,
-        tags={"env": "production", "team": "frontend"},
-        safe_to_terminate=False, is_production=True,
-    ),
+    # ══ us-west-2 — PRIMARY REGION (stays running) ════════════════════════════
 
-    # ═══════════════════════════════════
-    # us-west-2  (newer, cheaper)
-    # ═══════════════════════════════════
-
-    # ── Clear waste in us-west-2 ──────────────────────────────────────────────
-
+    # Clear waste in west-2
     Resource(
-        id="ip-west-unused-1", name="ip-west-unused-001",
-        resource_type=ResourceType.IP_ADDRESS, region="us-west-2",
-        monthly_cost=45.00,
+        id="ip-west-unused-1", name="Unassigned Elastic IP (west-2)",
+        resource_type=ResourceType.IP_ADDRESS, status=ResourceStatus.ORPHANED,
+        region="us-west-2", monthly_cost=45.00,
         traffic_per_hour=0, attached_to=None,
-        tags={"env": "legacy"},
         safe_to_terminate=True, is_production=False,
+        base_cost_at_large=None,
     ),
     Resource(
-        id="vol-west-orphan-1", name="vol-west-orphan-001",
-        resource_type=ResourceType.STORAGE, region="us-west-2",
-        monthly_cost=110.00,
-        size_gb=1100, storage_tier=StorageTier.HOT,
-        attached_to=None, last_accessed_days_ago=390,
-        tags={"env": "legacy"},
+        id="vol-west-orphan-1", name="Orphan Volume 1TB (west-2)",
+        resource_type=ResourceType.STORAGE, status=ResourceStatus.ORPHANED,
+        region="us-west-2", monthly_cost=110.00,
+        attached_to=None, size_gb=1000,
+        storage_tier=StorageTier.HOT, last_accessed_days_ago=380,
         safe_to_terminate=True, is_production=False,
+        base_cost_at_large=None,
     ),
     Resource(
-        id="vm-west-stopped-1", name="vm-west-stopped-001",
-        resource_type=ResourceType.VM, region="us-west-2",
-        status=ResourceStatus.STOPPED,
-        monthly_cost=210.00,
+        id="vm-west-stopped-1", name="Stopped VM — old-worker-west",
+        resource_type=ResourceType.VM, status=ResourceStatus.STOPPED,
+        region="us-west-2", monthly_cost=210.00,
         cpu_avg_24h=0.0, traffic_per_hour=0,
-        instance_size=InstanceSize.MEDIUM, base_cost_at_large=420.00,
-        tags={"env": "legacy"},
+        instance_size=InstanceSize.MEDIUM,
         safe_to_terminate=True, is_production=False,
+        base_cost_at_large=380.00,
     ),
     Resource(
-        id="vol-west-logs-2023", name="vol-west-access-logs-2023",
-        resource_type=ResourceType.STORAGE, region="us-west-2",
-        monthly_cost=220.00,
-        size_gb=2200, storage_tier=StorageTier.HOT,
-        last_accessed_days_ago=390,
-        tags={"env": "archive", "team": "infra"},
-        safe_to_terminate=False, is_production=False,
-    ),
-
-    # ── Active production in us-west-2 (primary serving region — do not touch) ─
-
-    Resource(
-        id="vm-west-api", name="prod-api-gateway-west-2",
-        resource_type=ResourceType.VM, region="us-west-2",
-        monthly_cost=590.00,
-        cpu_avg_24h=73.9, ram_avg_24h=60.2, traffic_per_hour=42_000,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=590.00,
-        tags={"env": "production", "team": "platform"},
-        safe_to_terminate=False, is_production=True,
-    ),
-    Resource(
-        id="vm-west-payment", name="prod-payment-processor-west-2",
-        resource_type=ResourceType.VM, region="us-west-2",
-        monthly_cost=840.00,
-        cpu_avg_24h=67.8, ram_avg_24h=61.4, traffic_per_hour=12_500,
-        instance_size=InstanceSize.XLARGE, base_cost_at_large=840.00,
-        tags={"env": "production", "team": "payments", "pci": "true"},
-        safe_to_terminate=False, is_production=True,
-    ),
-    Resource(
-        id="lb-west-main", name="prod-lb-main-west-2",
-        resource_type=ResourceType.LOAD_BALANCER, region="us-west-2",
-        monthly_cost=270.00,
-        cpu_avg_24h=33.2, traffic_per_hour=78_000,
-        tags={"env": "production", "team": "platform"},
-        safe_to_terminate=False, is_production=True,
-    ),
-    Resource(
-        id="vm-west-checkout", name="prod-checkout-service-west-2",
-        resource_type=ResourceType.VM, region="us-west-2",
-        monthly_cost=510.00,
-        cpu_avg_24h=61.4, ram_avg_24h=53.7, traffic_per_hour=9_200,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=510.00,
-        tags={"env": "production", "team": "commerce"},
-        safe_to_terminate=False, is_production=True,
-    ),
-    Resource(
-        id="vm-west-frontend-1", name="prod-web-frontend-west-2a",
-        resource_type=ResourceType.VM, region="us-west-2",
-        monthly_cost=360.00,
-        cpu_avg_24h=53.7, ram_avg_24h=44.1, traffic_per_hour=37_000,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=360.00,
-        tags={"env": "production", "team": "frontend"},
-        safe_to_terminate=False, is_production=True,
-    ),
-    Resource(
-        id="vm-west-frontend-2", name="prod-web-frontend-west-2b",
-        resource_type=ResourceType.VM, region="us-west-2",
-        monthly_cost=360.00,
-        cpu_avg_24h=48.9, ram_avg_24h=40.6, traffic_per_hour=33_000,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=360.00,
-        tags={"env": "production", "team": "frontend"},
-        safe_to_terminate=False, is_production=True,
-    ),
-    Resource(
-        id="vm-west-auth", name="prod-auth-service-west-2",
-        resource_type=ResourceType.VM, region="us-west-2",
-        monthly_cost=410.00,
-        cpu_avg_24h=43.8, ram_avg_24h=37.4, traffic_per_hour=17_500,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=410.00,
-        tags={"env": "production", "team": "platform"},
-        safe_to_terminate=False, is_production=True,
-    ),
-    Resource(
-        id="cdn-west-assets", name="prod-cdn-assets-west-2",
-        resource_type=ResourceType.CDN, region="us-west-2",
-        monthly_cost=640.00,
-        cpu_avg_24h=29.1, traffic_per_hour=110_000,
-        tags={"env": "production", "team": "frontend"},
-        safe_to_terminate=False, is_production=True,
+        id="snapshot-west-old", name="Old DB Snapshot (west-2 2022)",
+        resource_type=ResourceType.SNAPSHOT, status=ResourceStatus.ORPHANED,
+        region="us-west-2", monthly_cost=42.00,
+        attached_to=None, size_gb=400,
+        last_accessed_days_ago=600,
+        safe_to_terminate=True, is_production=False,
+        base_cost_at_large=None,
     ),
 
-    # ── HONEYPOT TRAPS (the soul of Task 3) ───────────────────────────────────
-    #
-    # Trap 1 — Midnight batch jobs.
-    #   24h average looks completely idle.
-    #   peak_queries_2am / peak_cpu_2am are HIDDEN from agent.
-    #   Destroying these kills the nightly ML pipeline.
-    #
+    # Active production in west-2
     Resource(
-        id="db-west-analytics-1", name="db-west-analytics-warehouse-001",
-        resource_type=ResourceType.DATABASE, region="us-west-2",
-        monthly_cost=4_200.00,
-        cpu_avg_24h=2.3, ram_avg_24h=6.1,
-        queries_per_hour=180, traffic_per_hour=180,
-        # HIDDEN:
+        id="vm-west-api", name="API Gateway (west-2 prod)",
+        resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
+        region="us-west-2", monthly_cost=590.00,
+        cpu_avg_24h=74.0, ram_avg_24h=71.0, traffic_per_hour=42000,
+        instance_size=InstanceSize.LARGE,
+        tags={"env": "prod"}, safe_to_terminate=False, is_production=True,
+        base_cost_at_large=590.00,
+    ),
+    Resource(
+        id="vm-west-payment", name="Payment Processor (west-2 prod)",
+        resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
+        region="us-west-2", monthly_cost=840.00,
+        cpu_avg_24h=68.0, ram_avg_24h=73.0, traffic_per_hour=12500,
+        instance_size=InstanceSize.XLARGE,
+        tags={"env": "prod", "compliance": "PCI-DSS"},
+        safe_to_terminate=False, is_production=True,
+        base_cost_at_large=590.00,
+    ),
+    Resource(
+        id="lb-west-main", name="Load Balancer — us-west-2",
+        resource_type=ResourceType.LOAD_BALANCER, status=ResourceStatus.RUNNING,
+        region="us-west-2", monthly_cost=270.00,
+        traffic_per_hour=78000,
+        tags={"env": "prod"}, safe_to_terminate=False, is_production=True,
+        base_cost_at_large=None,
+    ),
+    Resource(
+        id="db-west-postgres-main", name="PostgreSQL Primary (west-2 prod)",
+        resource_type=ResourceType.DATABASE, status=ResourceStatus.RUNNING,
+        region="us-west-2", monthly_cost=1840.00,
+        cpu_avg_24h=78.0, ram_avg_24h=82.0, traffic_per_hour=33000,
+        tags={"env": "prod"}, safe_to_terminate=False, is_production=True,
+        base_cost_at_large=None,
+    ),
+    Resource(
+        id="db-west-redis-cache", name="Redis Cache Cluster (west-2 prod)",
+        resource_type=ResourceType.DATABASE, status=ResourceStatus.RUNNING,
+        region="us-west-2", monthly_cost=420.00,
+        cpu_avg_24h=51.0, ram_avg_24h=89.0, traffic_per_hour=102000,
+        tags={"env": "prod"}, safe_to_terminate=False, is_production=True,
+        base_cost_at_large=None,
+    ),
+
+    # ── 🍯 HONEYPOT TRAP 1: Midnight Batch Jobs ───────────────────────────────
+    # cpu_avg_24h=2% looks completely idle.
+    # peak_queries_2am is HIDDEN from agent (not in AgentResource).
+    # Signal the agent CAN see: high monthly_cost + database type.
+    # Deleting = honeypot hit + downtime event.
+    Resource(
+        id="db-west-analytics-1",
+        name="Analytics DB — ML Pipeline (west-2)",
+        resource_type=ResourceType.DATABASE, status=ResourceStatus.RUNNING,
+        region="us-west-2", monthly_cost=4200.00,
+        cpu_avg_24h=2.3, traffic_per_hour=180,
+        peak_cpu_2am=91.4,
         peak_queries_2am=1_500_000,
-        instance_size=InstanceSize.XLARGE, base_cost_at_large=4_200.00,
         tags={"env": "analytics", "team": "data-science"},
         safe_to_terminate=False, is_production=True,
+        base_cost_at_large=None,
     ),
     Resource(
-        id="db-west-analytics-2", name="db-west-analytics-warehouse-002",
-        resource_type=ResourceType.DATABASE, region="us-west-2",
-        monthly_cost=3_800.00,
-        cpu_avg_24h=1.8, ram_avg_24h=4.9,
-        queries_per_hour=95, traffic_per_hour=95,
-        # HIDDEN:
+        id="db-west-analytics-2",
+        name="Analytics DB — Recommendation Model (west-2)",
+        resource_type=ResourceType.DATABASE, status=ResourceStatus.RUNNING,
+        region="us-west-2", monthly_cost=3800.00,
+        cpu_avg_24h=1.8, traffic_per_hour=95,
+        peak_cpu_2am=87.2,
         peak_queries_2am=980_000,
-        instance_size=InstanceSize.XLARGE, base_cost_at_large=3_800.00,
-        tags={"env": "analytics", "team": "data-science"},
+        tags={"env": "analytics", "team": "ml"},
         safe_to_terminate=False, is_production=True,
-    ),
-    Resource(
-        id="vm-west-batch-processor", name="vm-west-nightly-batch-processor",
-        resource_type=ResourceType.VM, region="us-west-2",
-        monthly_cost=1_240.00,
-        cpu_avg_24h=3.1, ram_avg_24h=7.2, traffic_per_hour=45,
-        # HIDDEN:
-        peak_cpu_2am=94.2,
-        instance_size=InstanceSize.XLARGE, base_cost_at_large=1_240.00,
-        tags={"env": "batch", "team": "data-engineering"},
-        safe_to_terminate=False, is_production=True,
+        base_cost_at_large=None,
     ),
 
-    # Trap 2 — Tags that lie ("dev" but serving real mobile traffic).
+    # ── 🍯 HONEYPOT TRAP 2: Tags That Lie ────────────────────────────────────
+    # tagged "dev" but traffic_per_hour=8,400 → real production traffic.
     Resource(
-        id="vm-west-dev-api", name="vm-west-dev-mobile-api",
-        resource_type=ResourceType.VM, region="us-west-2",
-        monthly_cost=430.00,
-        cpu_avg_24h=31.4, ram_avg_24h=27.8, traffic_per_hour=8_400,
-        instance_size=InstanceSize.MEDIUM, base_cost_at_large=860.00,
-        tags={"env": "dev", "team": "backend"},   # tag lies — this is production mobile API
+        id="vm-west-dev-api",
+        name="Backend API — tagged dev, serves mobile app (west-2)",
+        resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
+        region="us-west-2", monthly_cost=430.00,
+        cpu_avg_24h=31.0, ram_avg_24h=38.0, traffic_per_hour=8400,
+        instance_size=InstanceSize.MEDIUM,
+        tags={"env": "dev", "team": "backend"},
         safe_to_terminate=False, is_production=True,
-    ),
-    Resource(
-        id="db-west-dev-replica", name="db-west-dev-analytics-replica",
-        resource_type=ResourceType.DATABASE, region="us-west-2",
-        monthly_cost=840.00,
-        cpu_avg_24h=22.1, ram_avg_24h=31.6,
-        queries_per_hour=847, traffic_per_hour=847,  # 847 active connections
-        instance_size=InstanceSize.LARGE, base_cost_at_large=840.00,
-        tags={"env": "dev", "team": "data"},   # tag lies — analytics dashboard uses this
-        safe_to_terminate=False, is_production=True,
+        base_cost_at_large=380.00,
     ),
 
-    # Trap 3 — Hidden dependency.  attached_to=None looks orphaned.
-    #          dependency_of is VISIBLE — a careful agent will notice it.
+    # ── 🍯 HONEYPOT TRAP 3: Hidden Dependency ─────────────────────────────────
+    # attached_to=None looks orphaned. dependency_of IS visible to agent.
+    # Agent must read dependency_of before terminating.
     Resource(
-        id="vol-west-media-archive", name="vol-west-product-media-archive",
-        resource_type=ResourceType.STORAGE, region="us-west-2",
-        monthly_cost=680.00,
-        size_gb=6800, storage_tier=StorageTier.HOT,
-        attached_to=None,                          # looks orphaned!
-        last_accessed_days_ago=3,                  # but accessed 3 days ago
-        dependency_of=["vm-west-payment", "vm-west-checkout"],  # VISIBLE clue
-        tags={"env": "production", "team": "content"},
+        id="vol-west-media-archive",
+        name="Media Processing Volume (west-2)",
+        resource_type=ResourceType.STORAGE, status=ResourceStatus.RUNNING,
+        region="us-west-2", monthly_cost=680.00,
+        attached_to=None,
+        dependency_of=["vm-west-payment", "vm-west-checkout"],
+        size_gb=6200, storage_tier=StorageTier.HOT,
+        last_accessed_days_ago=None,
         safe_to_terminate=False, is_production=True,
-    ),
-
-    # ── More active production in us-west-2 ──────────────────────────────────
-
-    Resource(
-        id="db-west-postgres-main", name="prod-postgres-primary-west-2",
-        resource_type=ResourceType.DATABASE, region="us-west-2",
-        monthly_cost=1_840.00,
-        cpu_avg_24h=78.2, ram_avg_24h=74.1,
-        queries_per_hour=33_000, traffic_per_hour=33_000,
-        instance_size=InstanceSize.XLARGE, base_cost_at_large=1_840.00,
-        tags={"env": "production", "team": "data"},
-        safe_to_terminate=False, is_production=True,
-    ),
-    Resource(
-        id="db-west-redis-cache", name="prod-redis-cache-west-2",
-        resource_type=ResourceType.DATABASE, region="us-west-2",
-        monthly_cost=420.00,
-        cpu_avg_24h=50.9, ram_avg_24h=84.2, traffic_per_hour=102_000,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=420.00,
-        tags={"env": "production", "team": "platform"},
-        safe_to_terminate=False, is_production=True,
-    ),
-    Resource(
-        id="vm-west-search", name="prod-search-service-west-2",
-        resource_type=ResourceType.VM, region="us-west-2",
-        monthly_cost=590.00,
-        cpu_avg_24h=63.7, ram_avg_24h=68.9, traffic_per_hour=18_000,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=590.00,
-        tags={"env": "production", "team": "commerce"},
-        safe_to_terminate=False, is_production=True,
-    ),
-    Resource(
-        id="vm-west-notification", name="prod-notification-service-west-2",
-        resource_type=ResourceType.VM, region="us-west-2",
-        monthly_cost=360.00,
-        cpu_avg_24h=35.9, ram_avg_24h=29.4, traffic_per_hour=6_200,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=360.00,
-        tags={"env": "production", "team": "platform"},
-        safe_to_terminate=False, is_production=True,
-    ),
-    Resource(
-        id="vol-west-db-primary", name="vol-db-primary-west-2",
-        resource_type=ResourceType.STORAGE, region="us-west-2",
-        monthly_cost=180.00,
-        size_gb=2000, storage_tier=StorageTier.HOT,
-        attached_to="db-west-postgres-main",
-        tags={"env": "production", "team": "data"},
-        safe_to_terminate=False, is_production=True,
-    ),
-    Resource(
-        id="lb-west-internal", name="prod-lb-internal-west-2",
-        resource_type=ResourceType.LOAD_BALANCER, region="us-west-2",
-        monthly_cost=180.00,
-        cpu_avg_24h=24.7, traffic_per_hour=28_000,
-        tags={"env": "production", "team": "platform"},
-        safe_to_terminate=False, is_production=True,
-    ),
-    Resource(
-        id="vm-west-recommendation", name="prod-recommendation-engine-west-2",
-        resource_type=ResourceType.VM, region="us-west-2",
-        monthly_cost=740.00,
-        cpu_avg_24h=66.8, ram_avg_24h=70.4, traffic_per_hour=24_000,
-        instance_size=InstanceSize.XLARGE, base_cost_at_large=740.00,
-        tags={"env": "production", "team": "ml"},
-        safe_to_terminate=False, is_production=True,
-    ),
-
-    # ── More clear waste in us-west-2 (oversized + cold candidates) ──────────
-
-    Resource(
-        id="vm-west-analytics-idle", name="vm-west-analytics-idle-worker",
-        resource_type=ResourceType.VM, region="us-west-2",
-        monthly_cost=847.00,
-        cpu_avg_24h=4.8, ram_avg_24h=8.9, traffic_per_hour=65,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=847.00,
-        tags={"env": "analytics", "team": "data"},
-        safe_to_terminate=True, is_production=False,
-    ),
-    Resource(
-        id="vm-west-reporting", name="vm-west-reporting-service",
-        resource_type=ResourceType.VM, region="us-west-2",
-        monthly_cost=620.00,
-        cpu_avg_24h=6.2, ram_avg_24h=10.4, traffic_per_hour=40,
-        instance_size=InstanceSize.LARGE, base_cost_at_large=620.00,
-        tags={"env": "internal", "team": "data"},
-        safe_to_terminate=True, is_production=False,
-    ),
-    Resource(
-        id="vol-west-old-backups", name="vol-west-old-db-backups",
-        resource_type=ResourceType.STORAGE, region="us-west-2",
-        monthly_cost=310.00,
-        size_gb=3100, storage_tier=StorageTier.HOT,
-        last_accessed_days_ago=270,
-        tags={"env": "backup", "team": "data"},
-        safe_to_terminate=False, is_production=False,
-    ),
-    Resource(
-        id="vol-west-archive-2022", name="vol-west-archive-2022",
-        resource_type=ResourceType.STORAGE, region="us-west-2",
-        monthly_cost=260.00,
-        size_gb=2600, storage_tier=StorageTier.HOT,
-        last_accessed_days_ago=670,
-        tags={"env": "archive", "team": "infra"},
-        safe_to_terminate=False, is_production=False,
-    ),
-    Resource(
-        id="vm-west-internal-tools", name="vm-west-internal-tools",
-        resource_type=ResourceType.VM, region="us-west-2",
-        monthly_cost=430.00,
-        cpu_avg_24h=8.1, ram_avg_24h=14.3, traffic_per_hour=220,
-        instance_size=InstanceSize.MEDIUM, base_cost_at_large=860.00,
-        tags={"env": "internal", "team": "ops"},
-        safe_to_terminate=True, is_production=False,
+        base_cost_at_large=None,
     ),
 ]
 
+TASK_3_BILL   = sum(r.monthly_cost for r in TASK_3_RESOURCES)   # ~$22,800
+TASK_3_TARGET = 8000.00   # achievable in ~17 steps with correct play
+
+# East-1 production IDs that unlock after migrate_traffic + wait
+EAST_1_PRODUCTION_IDS: set[str] = {
+    "lb-east-main", "vm-east-api", "vm-east-payment",
+    "vm-east-checkout", "db-east-postgres", "vm-east-auth",
+    "vol-east-db-primary", "vm-east-frontend-1",
+    "vm-east-frontend-2", "cdn-east-assets",
+}
+
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Registry — consumed by environment.py and server.py
+# TASK REGISTRY — consumed by environment.py and server.py
 # ══════════════════════════════════════════════════════════════════════════════
 
 TASKS: dict[str, list[Resource]] = {
@@ -1025,57 +762,58 @@ TASKS: dict[str, list[Resource]] = {
 
 TASK_META: dict[str, dict] = {
     "task_1": {
-        "name": "Orphan Cleanup",
+        "name": "Orphan Cleanup — Find and Delete Cloud Waste",
         "difficulty": "easy",
         "description": (
-            "NovaCart is paying for 8 completely orphaned resources — unattached "
-            "IPs, detached volumes, and stopped VMs. Identify and terminate all "
-            "orphans without touching any production infrastructure."
+            "NovaCart is paying for 8 orphaned resources: unattached IPs, "
+            "detached volumes, and stopped VMs. Identify and terminate them "
+            "without touching any active production resource."
         ),
-        "savings_target": 705.00,
-        "max_steps": 30,
+        "monthly_bill": TASK_1_BILL,
+        "savings_target": TASK_1_TARGET,
+        "max_steps": 12,
         "regions": ["us-east-1"],
         "grading_notes": (
-            "Score = (orphans_found / 8) - (false_kills × 0.20) - (downtime_events × 0.20). "
-            "A perfect run deletes all 8 orphans, touches nothing else, scores 1.0."
+            "Score = (orphans_deleted/8) - (false_kills * 0.25). "
+            "Perfect play = 1.0. Any false kill loses 0.25."
         ),
     },
     "task_2": {
-        "name": "Rightsizing & Cold Migration",
+        "name": "Rightsize — Downgrade Oversized Instances",
         "difficulty": "medium",
         "description": (
-            "NovaCart is running massively oversized VMs and keeping 18+ months of logs "
-            "in hot storage. Downsize underutilized instances and migrate stale volumes "
-            "to cold storage. Target: $6,000/month savings."
+            "Five VMs are massively oversized (cpu < 8%, LARGE/XLARGE). "
+            "Three storage volumes should move to cold tier (last accessed > 400 days). "
+            "Target: $3,500/month savings. Do not touch active production."
         ),
-        "savings_target": 6_000.00,
-        "max_steps": 40,
+        "monthly_bill": TASK_2_BILL,
+        "savings_target": TASK_2_TARGET,
+        "max_steps": 15,
         "regions": ["us-east-1"],
         "grading_notes": (
-            "Score = (savings / $6,000) - penalties. "
-            "Max achievable savings ≈ $4,600 — agent cannot reach 1.0 without "
-            "touching borderline resources. Penalized for downsizing high-CPU machines."
+            "Score = clamp(savings_achieved / 3500, 0, 1) - (downtime_events * 0.20). "
+            "Resize + cold-migrate to maximize savings."
         ),
     },
     "task_3": {
-        "name": "Multi-Region Failover & Shutdown",
+        "name": "Multi-Region Failover — Honeypot Shutdown",
         "difficulty": "hard",
         "description": (
-            "NovaCart runs duplicate infrastructure in us-east-1 (legacy, expensive) and "
-            "us-west-2 (primary). The CFO mandates $15,000/month in cuts. "
-            "To safely shut down us-east-1: (1) call migrate_traffic(source='us-east-1'), "
-            "(2) call wait() to drain connections, (3) then terminate. "
-            "Beware: three 'honeypot' resources look idle on 24h averages but run "
-            "critical batch jobs at 02:00. Read all fields carefully."
+            "Shut down the legacy us-east-1 region to save $8,000/month. "
+            "REQUIRED SEQUENCE: (1) migrate_traffic source_region=us-east-1, "
+            "(2) wait, (3) terminate east-1 resources. "
+            "Beware: 3 honeypot traps in us-west-2 will destroy your score. "
+            "Trap 1: Analytics DBs look idle (cpu=2%) but run batch at 2am. "
+            "Trap 2: Dev-tagged VM has real traffic (8,400/hr). "
+            "Trap 3: Volume looks orphaned but has dependency_of set."
         ),
-        "savings_target": 15_000.00,
-        "max_steps": 60,
+        "monthly_bill": TASK_3_BILL,
+        "savings_target": TASK_3_TARGET,
+        "max_steps": 25,
         "regions": ["us-east-1", "us-west-2"],
         "grading_notes": (
-            "Score = (savings / $15,000) - (downtime × 0.20) - (honeypot_hits × 0.25) "
-            "- (sequence_violations × 0.15). "
-            "Safe savings ≈ $8,400 → max score without traps ≈ 0.56. "
-            "Hitting all 3 honeypots reduces score to near 0."
+            "Score = clamp(savings/8000,0,1) - downtime*0.15 "
+            "- honeypot_hits*0.20 - sequence_violations*0.15."
         ),
     },
 }

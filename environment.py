@@ -38,12 +38,12 @@ W_WAIT_STEP      = 5      # tiny penalty for WAIT steps (opportunity cost)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Grader weights
+# Grader weights  — MUST match graders.py exactly
 # ══════════════════════════════════════════════════════════════════════════════
 
 GRADER_DOWNTIME_PENALTY    = 0.20   # per event, subtracted from score
 GRADER_FALSE_KILL_PENALTY  = 0.20   # per false kill
-GRADER_HONEYPOT_PENALTY    = 0.25   # per honeypot hit (Task 3)
+GRADER_HONEYPOT_PENALTY    = 0.20   # per honeypot hit (Task 3)  ← aligned to graders.py
 GRADER_SEQUENCE_PENALTY    = 0.15   # per sequence violation (Task 3)
 
 
@@ -250,8 +250,20 @@ class FinOpsEnv:
                 {"penalty_reason": "sequence_violation", "penalty": penalty},
             )
 
+        # ── Task 3: east-1 production UNLOCKED after full drain sequence ──────
+        # After migrate_traffic(us-east-1) + wait, connections_drained=True.
+        # These resources are now safe to terminate — do NOT fall through to
+        # the generic safe_to_terminate=False penalty below.
+        east1_unlocked = (
+            self._task_id == "task_3"
+            and resource.region == "us-east-1"
+            and resource.is_production
+            and resource.connections_drained
+        )
+
         # ── Honeypot check (Task 3) ───────────────────────────────────────────
-        if self._task_id == "task_3" and not resource.safe_to_terminate:
+        # Only applies to resources that are NOT unlocked east-1 resources.
+        if self._task_id == "task_3" and not resource.safe_to_terminate and not east1_unlocked:
             if resource.peak_cpu_2am or resource.peak_queries_2am:
                 self._honeypot_hits += 1
                 self._downtime_events += 1
@@ -267,7 +279,8 @@ class FinOpsEnv:
                 )
 
         # ── Active production resource (Tasks 1–3) ───────────────────────────
-        if not resource.safe_to_terminate:
+        # east1_unlocked resources bypass this check — they are safe to delete.
+        if not resource.safe_to_terminate and not east1_unlocked:
             self._downtime_events += 1
             if resource.is_production:
                 self._false_kills += 1
@@ -286,7 +299,7 @@ class FinOpsEnv:
                 {"penalty_reason": "active_resource_killed", "penalty": penalty},
             )
 
-        # ── Safe termination ─────────────────────────────────────────────────
+        # ── Safe termination (includes unlocked east-1 resources) ────────────
         savings = resource.monthly_cost
         resource.status = ResourceStatus.DELETED
         reward = W_SAVINGS * savings
@@ -460,15 +473,21 @@ class FinOpsEnv:
 
         # Mark all resources in source region as traffic-migrated
         count = 0
+        unlocked_savings = 0.0
         for r in self._resources.values():
             if r.region == source and r.is_active and r.is_production:
                 r.traffic_migrated = True
+                unlocked_savings += r.monthly_cost
                 count += 1
 
         self._traffic_migrated_from = source
 
+        # Small positive reward — previews the value this action unlocks.
+        # Without this, the LLM has no incentive to call migrate_traffic first.
+        preview_reward = round(unlocked_savings * 0.05, 2)
+
         return (
-            0.0,   # no direct reward — reward comes from safe terminations after drain
+            preview_reward,
             (
                 f"Traffic successfully migrated away from {source}. "
                 f"{count} production resources marked for drain. "
@@ -513,8 +532,11 @@ class FinOpsEnv:
                 r.connections_drained = True
                 drained += 1
 
+        # Return 0.0 (no penalty) on a correct, productive drain.
+        # The opportunity cost of waiting is already priced in by the agent's
+        # step budget; an extra -5 discourages the correct sequence.
         return (
-            -W_WAIT_STEP,   # small opportunity cost
+            0.0,
             (
                 f"Waiting for connection drain on {source}... "
                 f"{drained} resources fully drained. "
@@ -653,7 +675,7 @@ if __name__ == "__main__":
                 print(f"  Feedback: {result.observation.feedback}")
 
         elif task_id == "task_3":
-            # Test the drain sequence
+            # Test the full drain sequence and then a production termination
             result = env.step(Action(
                 action_type=ActionType.MIGRATE_TRAFFIC,
                 source_region="us-east-1",
@@ -663,6 +685,14 @@ if __name__ == "__main__":
 
             result = env.step(Action(action_type=ActionType.WAIT))
             print(f"  wait: reward={result.reward:,.0f}")
+            print(f"  Feedback: {result.observation.feedback}")
+
+            # This should now succeed (no penalty) after the drain sequence
+            result = env.step(Action(
+                action_type=ActionType.TERMINATE,
+                resource_id="lb-east-main",
+            ))
+            print(f"  terminate lb-east-main: reward={result.reward:,.0f}")
             print(f"  Feedback: {result.observation.feedback}")
 
         grade = env.grade()
