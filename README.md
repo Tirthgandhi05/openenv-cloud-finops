@@ -216,7 +216,12 @@ uvicorn server:app --host 0.0.0.0 --port 7860
 
 ```bash
 docker build -t cloud-finops .
-docker run -p 7860:7860 cloud-finops
+docker run -p 7860:7860 \
+  -e ENV_BASE_URL="http://localhost:7860" \
+  -e API_BASE_URL="https://api-inference.huggingface.co/v1" \
+  -e MODEL_NAME="meta-llama/Llama-3.1-8B-Instruct" \
+  -e HF_TOKEN="hf_your_token" \
+  cloud-finops
 ```
 
 The server will be available at `http://localhost:7860`. Auto-generated API docs are at `http://localhost:7860/docs`.
@@ -278,23 +283,7 @@ The heuristic baseline uses deterministic rules and requires no API key. The LLM
 
 ---
 
-## Project Structure
 
-```
-server.py          FastAPI application with all REST endpoints
-environment.py     Core simulation engine (FinOpsEnv class)
-models.py          Pydantic typed models: Resource, Action, Observation, GraderResult
-resources.py       Simulated NovaCart infrastructure for all three tasks
-graders.py         Deterministic episode scoring logic
-inference.py       Standalone LLM agent client with heuristic fallback
-baseline.py        Baseline agent (GPT-4o + heuristic) for benchmark scoring
-openenv.yaml       OpenEnv manifest: task definitions, schemas, runtime config
-requirements.txt   Python dependencies
-Dockerfile         Container build for Hugging Face Spaces (port 7860)
-README.md          This file
-```
-
----
 
 ## Technology Stack
 
@@ -323,3 +312,18 @@ Hugging Face Spaces compatible — listens on port 7860.
 | CF-004 | Cold Storage Candidate | Old logs rarely accessed | `last_accessed > 240 days` → migrate cold |
 | CF-005 | Multi-Region Redundancy | Infrastructure duplicated across regions | Migrate traffic → shutdown legacy region |
 | CF-006 | Hidden Dependency Trap | Resource appears idle but is critical | Check `dependency_of` before deletion |
+
+
+## Project Structure
+├── Dockerfile
+├── README.md
+├── requirements.txt
+├── openenv.yaml
+├── tasks.py # Scenario definitions (6 scenarios across 3 tasks)
+├── graders.py # Deterministic graders for all tasks
+├── inference.py # Baseline agent + smart fallback logic
+├── server/
+│ ├── init.py
+│ ├── app.py # FastAPI endpoints
+│ ├── environment.py # Core OpenEnv step/reset/state logic
+│ └── models.py # Typed Pydantic models (Action, Observation, Reward)
