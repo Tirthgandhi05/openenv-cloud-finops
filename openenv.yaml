@@ -6,8 +6,8 @@ description: >
   a fictional mid-size e-commerce platform. The agent plays the role of an
   automated DevOps/FinOps engineer that must cut cloud waste without causing
   production downtime. Three tasks of increasing difficulty cover orphan
-  cleanup, safe resource rightsizing, multi-region traffic migration, and
-  honeypot trap avoidance.
+  cleanup, safe resource rightsizing with traps, and multi-region traffic
+  migration with 5 honeypot traps.
 
 domain: cloud-infrastructure
 tags:
@@ -18,6 +18,7 @@ tags:
   - real-world
   - multi-region
   - sequential-decisions
+  - honeypot-traps
 
 observation_space:
   type: structured
@@ -55,78 +56,41 @@ action_space:
       values:
         source_region: [us-east-1]
     - name: wait
-      description: "Task 3: drain connections after migrate_traffic to unlock safe termination."
+      description: "Task 3: drain connections after migrate_traffic."
       required: []
 
 reward:
   type: dense
   description: >
     Dense reward signal proportional to dollars saved. Large negative penalties
-    for downtime events (killing active production resources), honeypot hits
-    (deleting resources that look idle but run critical batch jobs), and
-    sequence violations (terminating east-1 before migrating traffic).
-    A small per-step cost encourages efficiency.
-  key_values:
-    terminate_safe: "+monthly_cost (as reward units, proportional to savings)"
-    terminate_unsafe_production: "-(W_DOWNTIME + W_FALSE_KILL) large penalty"
-    terminate_honeypot: "-(W_HONEYPOT + W_DOWNTIME) largest penalty"
-    resize_correct: "+savings_delta reward"
-    migrate_storage_correct: "+savings_delta reward"
-    migrate_traffic_correct: "0 direct reward, unlocks safe termination"
-    wait_after_migrate: "small opportunity cost, unlocks east-1 terminations"
-    wait_before_migrate: "-W_SEQUENCE sequence violation penalty"
-    per_step_cost: "small negative constant (efficiency pressure)"
+    for downtime events, honeypot hits, and sequence violations.
 
 tasks:
   - id: task_1
     name: "Orphan Cleanup"
     difficulty: easy
-    max_steps: 30
+    max_steps: 15
     savings_target: 705.0
-    monthly_bill: 7450.0
-    regions: [us-east-1]
     description: >
-      20 resources in us-east-1. Find and delete 8 provably orphaned resources:
-      2 unassigned IPs, 3 detached volumes, 2 stopped VMs, 1 old snapshot.
-      Do not touch any production resources.
-    grading: >
-      Score = (orphans_deleted / 8) - (false_kills × 0.20) - (downtime_events × 0.20).
-      Perfect run (all 8 orphans, no production kills) = 1.0.
+      20 resources in us-east-1. Find and delete 8 orphaned resources.
 
   - id: task_2
     name: "Rightsizing & Cold Migration"
     difficulty: medium
-    max_steps: 40
-    savings_target: 6000.0
-    monthly_bill: 16908.0
-    regions: [us-east-1]
+    max_steps: 18
+    savings_target: 3500.0
     description: >
-      30 resources in us-east-1. Resize oversized VMs (low CPU utilisation under 10%)
-      and migrate stale archives to cold storage (last_accessed_days_ago > 240).
-      Target: $6,000/month savings. Max achievable safely ≈ $4,600.
-    grading: >
-      Score = min(savings / $6,000, 1.0) - (downtime_events × 0.20) - (false_kills × 0.20).
+      20 resources with traps. Resize oversized VMs and cold-migrate stale storage.
+      Two trap resources test whether the agent checks dependencies and batch schedules.
 
   - id: task_3
-    name: "Multi-Region Failover & Shutdown"
+    name: "Multi-Region Failover — 5 Honeypots"
     difficulty: hard
-    max_steps: 60
-    savings_target: 15000.0
-    monthly_bill: ~105000.0
-    regions: [us-east-1, us-west-2]
+    max_steps: 35
+    savings_target: 10000.0
     description: >
-      50 resources across us-east-1 (legacy) and us-west-2 (primary).
-      Target: save $15,000/month by shutting down all east-1 infrastructure.
-      MANDATORY SEQUENCE: migrate_traffic(source_region='us-east-1') → wait → terminate.
-      Three honeypot traps: midnight batch databases that appear idle on 24h averages,
-      dev-tagged resources with high live traffic, and a volume that appears orphaned
-      but has dependency_of set.
-    grading: >
-      Score = min(savings / $15,000, 1.0)
-            - (downtime_events × 0.20)
-            - (false_kills × 0.20)
-            - (honeypot_hits × 0.25)
-            - (sequence_violations × 0.15).
+      50 resources across 2 regions. Shut down legacy us-east-1 region via
+      mandatory migrate→wait→terminate sequence. 5 honeypot traps in us-west-2.
 
 endpoints:
   health: GET /
