@@ -284,4 +284,3 @@ class BaselineResult(BaseModel):
     mean_score:  float
  
 StepResult.model_rebuild()
- 

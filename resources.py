@@ -1,6 +1,5 @@
 """
 resources.py — Simulated cloud infrastructure
-
 Design principles:
   Budget: each task ≤ 20 steps. Total across 3 tasks ≤ 50 LLM calls.
 """

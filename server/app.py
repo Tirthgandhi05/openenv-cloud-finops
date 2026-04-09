@@ -1,8 +1,8 @@
-# server.py — Cloud FinOps Sandbox — server (port 7860)
+# server.py — Cloud FinOps Sandbox — FastAPI server (port 7860)
 from __future__ import annotations
 import os
 import json, subprocess, sys
-from typing import List, Optional
+from typing import List,Optional
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 

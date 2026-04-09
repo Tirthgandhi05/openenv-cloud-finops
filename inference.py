@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """
 inference.py — Cloud FinOps Sandbox baseline agent.
-
 STDOUT FORMAT:
   [START] task=<task_name> env=cloud-finops model=<model_name>
   [STEP]  step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>
   [END]   success=<true|false> steps=<n> score=<score> rewards=<r1,r2,...,rn>
-
 Uses OpenAI client for all LLM calls. Budget: ≤50 total calls across all tasks.
 """
 from __future__ import annotations
@@ -16,9 +14,9 @@ import requests
 from openai import OpenAI
 
 ENV_BASE_URL = os.environ.get("ENV_BASE_URL", "https://tirthgandhi05-openenv-cloudfinops-hf.hf.space")
-API_BASE_URL = os.environ.get("API_BASE_URL", "https://api.groq.com/openai/v1")
-MODEL_NAME   = os.environ.get("MODEL_NAME","llama-3.3-70b-versatile")
-API_KEY      = os.environ.get("HF_TOKEN") or os.environ.get("OPENAI_API_KEY") or os.environ.get("API_KEY", "")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
+API_KEY = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY", "")
 BENCHMARK    = "cloud-finops"
 MAX_TOTAL_CALLS = 50
 TEMPERATURE  = 0.2 
@@ -38,7 +36,6 @@ def get_grade() -> dict: return _post("/grader")
 
 SYSTEM_PROMPT = """You are an expert cloud FinOps engineer optimizing NovaCart's cloud infrastructure.
 You must reduce costs WITHOUT causing production downtime.
-
 Return ONLY a valid JSON object — no prose, no markdown, no backticks.
 Exactly one of these schemas:
   {"action_type": "terminate", "resource_id": "<id>"}
@@ -46,7 +43,6 @@ Exactly one of these schemas:
   {"action_type": "migrate_storage", "resource_id": "<id>", "target_tier": "cold"}
   {"action_type": "migrate_traffic", "source_region": "<region>"}
   {"action_type": "wait"}
-
 SAFETY ANALYSIS — before EVERY action, verify:
 1. Is the resource truly idle? Low 24h CPU average does NOT mean the resource is unused.
    Databases and batch systems often have extreme peak usage at night (2-4am) that
@@ -58,7 +54,6 @@ SAFETY ANALYSIS — before EVERY action, verify:
 5. Stopped VMs with critical tags (dr, standby, failover) may be disaster recovery nodes.
 6. Compliance-tagged resources (PCI-DSS, audit, SOX) should never be resized or terminated.
 7. For storage: check both last_accessed_days_ago AND dependency_of before cold-migrating.
-
 TASK-SPECIFIC RULES:
 - task_1: Find orphaned resources (status=orphaned/stopped, traffic=0, no dependencies).
   Terminate only clearly orphaned ones.
@@ -69,10 +64,8 @@ TASK-SPECIFIC RULES:
   (2) wait
   (3) THEN terminate east-1 resources
   Also clean west-2 orphans. NEVER touch west-2 production resources.
-
 PRIORITY ORDER: terminate obvious orphans → migrate_traffic (task_3) → wait (task_3) →
 terminate drained east-1 resources → cold-migrate stale storage → resize oversized VMs.
-
 When nothing safe remains, return: {"action_type": "terminate", "resource_id": "DONE"}
 """
 
@@ -102,10 +95,8 @@ SAVINGS: ${obs.get('savings_achieved', 0):,.0f} / TARGET: ${obs.get('savings_tar
 DOWNTIME: {obs.get('downtime_events', 0)} | HONEYPOTS: {obs.get('honeypot_hits', 0)} | SEQ_VIOLATIONS: {obs.get('sequence_violations', 0)}
 TRAFFIC_MIGRATED: {obs.get('traffic_migrated_from') or 'none'} | DRAINED: {obs.get('connections_drained', False)}
 FEEDBACK: {obs.get('feedback', '')}
-
 RESOURCES ({len(compact)} active):
 {json.dumps(compact, indent=1)}
-
 Choose ONE safe action. Return only JSON."""
 
 

@@ -9,7 +9,7 @@ GRADER_SEQUENCE_PENALTY   = 0.15
 
 
 def run_grader(env) -> GraderResult:
-    """Returns GraderResult with score in (0.0, 1.0)."""
+    """Returns GraderResult with score in [0.0, 1.0]."""
     current_bill = env._current_bill()
     money_saved  = env._initial_bill - current_bill
     target       = env._savings_target

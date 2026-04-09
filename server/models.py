@@ -235,7 +235,7 @@ class GraderBreakdown(BaseModel):
  
 class GraderResult(BaseModel):
     task_id:             str
-    score:               float = Field(..., ge=0.0, le=1.0)
+    score:               float = Field(..., gt=0.0, lt=1.0)
     money_saved:         float
     savings_target:      float
     downtime_events:     int
@@ -284,4 +284,3 @@ class BaselineResult(BaseModel):
     mean_score:  float
  
 StepResult.model_rebuild()
- 
