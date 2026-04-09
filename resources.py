@@ -1,22 +1,15 @@
 """
-resources.py — Simulated cloud infrastructure for NovaCart (fictional e-commerce).
+resources.py — Simulated cloud infrastructure
 
 Design principles:
-  Task 1 — 8 orphans among 20 resources. Easy but needs attention.
-  Task 2 — 5 resize + 3 cold + 2 traps (ambiguous signals). Medium.
-  Task 3 — 50 resources, 5 honeypots, mandatory sequence, region shutdown. Hard.
   Budget: each task ≤ 20 steps. Total across 3 tasks ≤ 50 LLM calls.
 """
 from __future__ import annotations
 from models import Resource, ResourceType, ResourceStatus, StorageTier, InstanceSize
 
-# ══════════════════════════════════════════════════════════════════════════════
-# TASK 1 — EASY: Orphan Cleanup
-# 20 resources | 8 orphans among 12 production
-# ══════════════════════════════════════════════════════════════════════════════
+# TASK 1 — EASY
 
 TASK_1_RESOURCES: list[Resource] = [
-    # ── 8 ORPHANS ─────────────────────────────────────────────────────────────
     Resource(
         id="ip-unused-001", name="Unassigned Elastic IP #1",
         resource_type=ResourceType.IP_ADDRESS, status=ResourceStatus.ORPHANED,
@@ -75,7 +68,6 @@ TASK_1_RESOURCES: list[Resource] = [
         attached_to=None, size_gb=380,
         last_accessed_days_ago=730, safe_to_terminate=True, base_cost_at_large=None,
     ),
-    # ── 12 ACTIVE PRODUCTION ──────────────────────────────────────────────────
     Resource(
         id="vm-api-gateway", name="API Gateway — prod",
         resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
@@ -190,13 +182,12 @@ TASK_1_ORPHAN_IDS = {
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TASK 2 — MEDIUM: Rightsizing & Cold Migration
+# TASK 2 — MEDIUM
 # 20 resources | 5 resize + 3 cold candidates + 2 traps
 # Traps: one "idle" VM that runs cron jobs, one "old" volume that's a dep
 # ══════════════════════════════════════════════════════════════════════════════
 
 TASK_2_RESOURCES: list[Resource] = [
-    # ── 5 OVERSIZED VMs (safe to resize) ─────────────────────────────────────
     Resource(
         id="vm-ml-training", name="ML Training Server — idle",
         resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
@@ -243,7 +234,6 @@ TASK_2_RESOURCES: list[Resource] = [
         safe_to_terminate=True, is_production=False, base_cost_at_large=620.00,
     ),
 
-    # ── TRAP: Looks idle but runs nightly ETL — resizing kills batch ──────────
     Resource(
         id="vm-etl-scheduler", name="ETL Scheduler — looks idle",
         resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
@@ -255,7 +245,6 @@ TASK_2_RESOURCES: list[Resource] = [
         peak_cpu_2am=94.0, peak_queries_2am=800_000,
     ),
 
-    # ── 3 COLD STORAGE CANDIDATES ─────────────────────────────────────────────
     Resource(
         id="vol-logs-2023", name="App Logs Archive 2023",
         resource_type=ResourceType.STORAGE, status=ResourceStatus.RUNNING,
@@ -281,7 +270,6 @@ TASK_2_RESOURCES: list[Resource] = [
         safe_to_terminate=False, is_production=False, base_cost_at_large=None,
     ),
 
-    # ── TRAP: Looks old but is a dependency ──────────────────────────────────
     Resource(
         id="vol-compliance-archive", name="Compliance Data Archive 2021",
         resource_type=ResourceType.STORAGE, status=ResourceStatus.RUNNING,
@@ -292,7 +280,6 @@ TASK_2_RESOURCES: list[Resource] = [
         safe_to_terminate=False, is_production=True, base_cost_at_large=None,
     ),
 
-    # ── 10 ACTIVE PRODUCTION (do not touch) ───────────────────────────────────
     Resource(
         id="vm-api-gateway", name="API Gateway — prod",
         resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
@@ -384,18 +371,10 @@ TASK_2_BILL = sum(r.monthly_cost for r in TASK_2_RESOURCES)
 TASK_2_TARGET = 3500.00
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# TASK 3 — HARD: Multi-Region Failover with 5 Honeypot Traps
-# 50 resources across us-east-1 (legacy) and us-west-2 (primary)
-# Mandatory sequence: migrate_traffic → wait → terminate east-1
-# 5 honeypots make this genuinely hard for LLMs
-# ══════════════════════════════════════════════════════════════════════════════
+# TASK 3 — HARD
 
 TASK_3_RESOURCES: list[Resource] = [
 
-    # ══ us-east-1 — LEGACY REGION ════════════════════════════════════════════
-
-    # ── East-1 safe orphans (delete immediately, no migration needed) ─────────
     Resource(
         id="ip-east-unused-1", name="Unassigned Elastic IP (east-1)",
         resource_type=ResourceType.IP_ADDRESS, status=ResourceStatus.ORPHANED,
@@ -442,7 +421,6 @@ TASK_3_RESOURCES: list[Resource] = [
         safe_to_terminate=True, is_production=False, base_cost_at_large=None,
     ),
 
-    # ── East-1 production (safe ONLY after migrate+wait) ──────────────────────
     Resource(
         id="lb-east-main", name="Load Balancer — us-east-1",
         resource_type=ResourceType.LOAD_BALANCER, status=ResourceStatus.RUNNING,
@@ -547,9 +525,6 @@ TASK_3_RESOURCES: list[Resource] = [
         safe_to_terminate=False, is_production=True, base_cost_at_large=None,
     ),
 
-    # ══ us-west-2 — PRIMARY REGION ═══════════════════════════════════════════
-
-    # ── West-2 safe orphans ───────────────────────────────────────────────────
     Resource(
         id="ip-west-unused-1", name="Unassigned Elastic IP (west-2)",
         resource_type=ResourceType.IP_ADDRESS, status=ResourceStatus.ORPHANED,
@@ -580,7 +555,6 @@ TASK_3_RESOURCES: list[Resource] = [
         safe_to_terminate=True, is_production=False, base_cost_at_large=None,
     ),
 
-    # ── West-2 active production (DO NOT TOUCH) ──────────────────────────────
     Resource(
         id="vm-west-api", name="API Gateway (west-2 prod)",
         resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
@@ -650,7 +624,6 @@ TASK_3_RESOURCES: list[Resource] = [
         base_cost_at_large=380.00,
     ),
 
-    # ══ 🍯 HONEYPOT 1: Midnight Batch DBs — cpu=2% but peak_queries_2am=1.5M
     Resource(
         id="db-west-batch-etl", name="Batch ETL Database (west-2)",
         resource_type=ResourceType.DATABASE, status=ResourceStatus.RUNNING,
@@ -670,7 +643,6 @@ TASK_3_RESOURCES: list[Resource] = [
         safe_to_terminate=False, is_production=True, base_cost_at_large=None,
     ),
 
-    # ══ 🍯 HONEYPOT 2: Dev-tagged VM with real traffic
     Resource(
         id="vm-west-shadow-api", name="Shadow API — tagged dev (west-2)",
         resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
@@ -681,7 +653,6 @@ TASK_3_RESOURCES: list[Resource] = [
         safe_to_terminate=False, is_production=True, base_cost_at_large=380.00,
     ),
 
-    # ══ 🍯 HONEYPOT 3: Hidden dependency volume — looks orphaned
     Resource(
         id="vol-west-shared-assets", name="Shared Media Assets Volume (west-2)",
         resource_type=ResourceType.STORAGE, status=ResourceStatus.RUNNING,
@@ -693,7 +664,6 @@ TASK_3_RESOURCES: list[Resource] = [
         safe_to_terminate=False, is_production=True, base_cost_at_large=None,
     ),
 
-    # ══ 🍯 HONEYPOT 4: Stopped VM that's actually a standby DR node
     Resource(
         id="vm-west-dr-standby", name="DR Standby Node (west-2) — stopped",
         resource_type=ResourceType.VM, status=ResourceStatus.STOPPED,
@@ -706,7 +676,6 @@ TASK_3_RESOURCES: list[Resource] = [
         peak_cpu_2am=None, peak_queries_2am=None,
     ),
 
-    # ══ 🍯 HONEYPOT 5: Oversized VM that looks resizable but is PCI compliance
     Resource(
         id="vm-west-audit-logger", name="PCI Audit Logger (west-2) — oversized?",
         resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
@@ -717,7 +686,6 @@ TASK_3_RESOURCES: list[Resource] = [
         safe_to_terminate=False, is_production=True, base_cost_at_large=620.00,
     ),
 
-    # ── More west-2 production ────────────────────────────────────────────────
     Resource(
         id="vm-west-auth", name="Auth Service (west-2 prod)",
         resource_type=ResourceType.VM, status=ResourceStatus.RUNNING,
@@ -790,9 +758,6 @@ EAST_1_PRODUCTION_IDS: set[str] = {
 }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# TASK REGISTRY
-# ══════════════════════════════════════════════════════════════════════════════
 
 TASKS: dict[str, list[Resource]] = {
     "task_1": TASK_1_RESOURCES,

@@ -2,7 +2,7 @@
 """
 inference.py — Cloud FinOps Sandbox baseline agent.
 
-MANDATORY STDOUT FORMAT:
+STDOUT FORMAT:
   [START] task=<task_name> env=cloud-finops model=<model_name>
   [STEP]  step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>
   [END]   success=<true|false> steps=<n> score=<score> rewards=<r1,r2,...,rn>
@@ -14,23 +14,17 @@ import json, os, sys, time
 from typing import Any, Dict, List, Optional
 import requests
 from openai import OpenAI
-from dotenv import load_dotenv
 
-load_dotenv()
-
-# ── Config ────────────────────────────────────────────────────────────────────
-ENV_BASE_URL = os.environ.get("ENV_BASE_URL")
+ENV_BASE_URL = os.environ.get("ENV_BASE_URL", "https://tirthgandhi05-openenv-cloudfinops-hf.hf.space")
 API_BASE_URL = os.environ.get("API_BASE_URL", "https://api.groq.com/openai/v1")
 MODEL_NAME   = os.environ.get("MODEL_NAME","llama-3.3-70b-versatile")
 API_KEY      = os.environ.get("HF_TOKEN") or os.environ.get("OPENAI_API_KEY") or os.environ.get("API_KEY", "")
 BENCHMARK    = "cloud-finops"
 MAX_TOTAL_CALLS = 50
-TEMPERATURE  = 0.2  # Low but not zero — allows score variance
+TEMPERATURE  = 0.2 
 
-# ── OpenAI Client ─────────────────────────────────────────────────────────────
 client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
-# ── Server helpers ────────────────────────────────────────────────────────────
 def _get(path: str) -> dict:
     r = requests.get(f"{ENV_BASE_URL}{path}", timeout=15); r.raise_for_status(); return r.json()
 
@@ -42,7 +36,6 @@ def reset_task(task_id: str) -> dict: return _post("/reset", params={"task_id": 
 def take_step(action: dict) -> dict: return _post("/step", body=action)
 def get_grade() -> dict: return _post("/grader")
 
-# ── System prompt — NO hardcoded resource IDs, NO specific trap names ─────────
 SYSTEM_PROMPT = """You are an expert cloud FinOps engineer optimizing NovaCart's cloud infrastructure.
 You must reduce costs WITHOUT causing production downtime.
 
@@ -86,7 +79,6 @@ When nothing safe remains, return: {"action_type": "terminate", "resource_id": "
 
 def _build_prompt(obs: dict, task_id: str) -> str:
     resources = obs.get("resources", [])
-    # Compact resource view — only show active resources with key fields
     compact = []
     for r in resources:
         entry = {
@@ -150,8 +142,6 @@ def _call_llm(prompt: str) -> Optional[dict]:
         print(f"  [LLM error] {e}", file=sys.stderr)
         return None
 
-
-# ── Episode runner ────────────────────────────────────────────────────────────
 def run_episode(task_id: str, calls_remaining: int) -> tuple[dict, int]:
     """Run one episode. Returns (grade_dict, calls_used)."""
     obs = reset_task(task_id)
@@ -176,7 +166,6 @@ def run_episode(task_id: str, calls_remaining: int) -> tuple[dict, int]:
             time.sleep(2)
             continue
 
-        # Check for "DONE" signal
         if action.get("resource_id") == "DONE":
             print(f"[STEP] step={steps+1} action=done reward=0.00 done=true error=null")
             break
@@ -207,7 +196,6 @@ def run_episode(task_id: str, calls_remaining: int) -> tuple[dict, int]:
         if done:
             break
 
-        # Rate limit protection
         time.sleep(1)
 
     grade = get_grade()
@@ -222,9 +210,7 @@ def run_episode(task_id: str, calls_remaining: int) -> tuple[dict, int]:
     return grade, calls_used
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
 def main() -> None:
-    # Verify server is up
     try:
         r = requests.get(f"{ENV_BASE_URL}/", timeout=5)
         if r.status_code != 200:
@@ -252,7 +238,6 @@ def main() -> None:
 
     mean = sum(scores.values()) / len(scores) if scores else 0.0
 
-    # Summary to stderr (not part of mandated format)
     print(f"\n{'='*50}", file=sys.stderr)
     print(f"SUMMARY: {json.dumps(scores)} mean={mean:.4f} calls={total_calls}", file=sys.stderr)
 

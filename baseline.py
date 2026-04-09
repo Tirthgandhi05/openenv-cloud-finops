@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-"""
-baseline.py — Cloud FinOps Sandbox heuristic baseline.
-Runs directly against the environment (no HTTP). Produces reproducible scores.
+# Cloud FinOps Sandbox heuristic baseline.
 
-Usage:
+"""
   python baseline.py               → pretty-print scores
   python baseline.py --json        → JSON to stdout
   python baseline.py --task task_2 → one task only
@@ -25,9 +23,7 @@ def _heuristic_action(obs_dict: dict) -> Optional[dict]:
     migrated = obs_dict.get("traffic_migrated_from")
     drained = obs_dict.get("connections_drained", False)
 
-    # Task 3: mandatory sequence
     if task == "task_3":
-        # Phase 1: delete east-1 orphans before migration
         if migrated is None:
             for r in resources:
                 if r["region"] == "us-east-1" and _is_orphan(r):
@@ -35,22 +31,18 @@ def _heuristic_action(obs_dict: dict) -> Optional[dict]:
             return {"action_type": "migrate_traffic", "source_region": "us-east-1"}
         if not drained:
             return {"action_type": "wait"}
-        # Phase 2: terminate drained east-1 production
         for r in resources:
             if r["region"] == "us-east-1":
                 return {"action_type": "terminate", "resource_id": r["id"]}
 
-    # Generic: terminate orphans
     for r in resources:
         if _is_orphan(r) and not _has_dependency(r) and not _is_risky(r):
             return {"action_type": "terminate", "resource_id": r["id"]}
 
-    # Cold-migrate stale storage
     for r in resources:
         if _is_cold_candidate(r):
             return {"action_type": "migrate_storage", "resource_id": r["id"], "target_tier": "cold"}
 
-    # Resize oversized VMs
     for r in resources:
         if _is_oversized(r) and not _is_risky(r):
             return {"action_type": "resize", "resource_id": r["id"], "new_size": "small"}
@@ -92,13 +84,9 @@ def _is_risky(r: dict) -> bool:
     tags = r.get("tags") or {}
     traffic = r.get("traffic_per_hour") or 0
     queries = r.get("queries_per_hour") or 0
-    # Dev-tagged with real traffic
     if tags.get("env") == "dev" and traffic > 1000: return True
-    # DR/standby
     if tags.get("env") == "dr" or tags.get("role") == "standby": return True
-    # Compliance
     if tags.get("compliance") or tags.get("audit"): return True
-    # Nightly schedule
     if tags.get("schedule") == "nightly": return True
     return False
 

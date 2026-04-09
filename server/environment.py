@@ -18,7 +18,7 @@ W_FALSE_KILL     = 5_000
 W_WASTED_ACTION  = 10
 W_WAIT_STEP      = 5
 
-# Grader weights — MUST match graders.py
+# Grader weights 
 GRADER_DOWNTIME_PENALTY    = 0.20
 GRADER_FALSE_KILL_PENALTY  = 0.20
 GRADER_HONEYPOT_PENALTY    = 0.20
@@ -127,7 +127,6 @@ class FinOpsEnv:
         if not resource.is_active:
             return -W_WASTED_ACTION, f"{resource.name} is already {resource.status}.", {"warning": "already_inactive"}
 
-        # Task 3: sequence enforcement
         if (self._task_id == "task_3" and resource.region == "us-east-1"
                 and resource.is_production and not resource.traffic_migrated):
             self._sequence_violations += 1
@@ -143,7 +142,6 @@ class FinOpsEnv:
             and resource.is_production and resource.connections_drained
         )
 
-        # Honeypot check
         if not resource.safe_to_terminate and not east1_unlocked:
             if resource.peak_cpu_2am or resource.peak_queries_2am:
                 self._honeypot_hits += 1

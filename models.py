@@ -1,20 +1,13 @@
-# models.py
-# Cloud FinOps Sandbox — OpenEnv submission
-# All Pydantic typed models.
+# Cloud FinOps Sandbox — OpenEnv
 from __future__ import annotations
  
 from typing import Any, Dict, List, Optional
 from enum import Enum
  
 from pydantic import BaseModel, Field, model_validator
- 
- 
-# ─── Instance size ordering (smallest → largest) ──────────────────────────────
- 
+  
 INSTANCE_SIZE_ORDER = ["nano", "micro", "small", "medium", "large", "xlarge"]
- 
-# Cost multiplier relative to LARGE (= 1.0)
-# Used by _compute_resized_cost in environment.py
+
 INSTANCE_SIZE_COST_MULTIPLIER: dict[str, float] = {
     "nano":   0.09,   # nano   ≈  9% of large cost
     "micro":  0.15,   # micro  ≈ 15%
@@ -23,10 +16,7 @@ INSTANCE_SIZE_COST_MULTIPLIER: dict[str, float] = {
     "large":  1.00,   # large  = reference
     "xlarge": 2.00,   # xlarge = 2× large
 }
- 
- 
-# ─── Enums ────────────────────────────────────────────────────────────────────
- 
+  
 class ResourceType(str, Enum):
     VM            = "vm"
     DATABASE      = "database"
@@ -45,11 +35,9 @@ class ResourceStatus(str, Enum):
     DELETED  = "deleted"
     MIGRATED = "migrated"
  
- 
 class StorageTier(str, Enum):
     HOT  = "hot"
     COLD = "cold"
- 
  
 class ActionType(str, Enum):
     TERMINATE       = "terminate"
@@ -74,12 +62,11 @@ class TaskDifficulty(str, Enum):
     HARD   = "hard"
  
  
-# ─── Internal Resource ────────────────────────────────────────────────────────
+# Internal Resource
  
 class Resource(BaseModel):
     """
-    Full internal resource. Contains hidden fields never sent to agent.
-    Always call .to_agent_view() before including in observations.
+    Contains hidden fields never sent to agent.
     """
     id:            str
     name:          str
@@ -88,17 +75,16 @@ class Resource(BaseModel):
     region:        str = "us-east-1"
     monthly_cost:  float
  
-    # Utilization — visible to agent
+    # visible to agent
     cpu_avg_24h:      Optional[float] = None
     ram_avg_24h:      Optional[float] = None
     traffic_per_hour: Optional[int]   = None
     queries_per_hour: Optional[int]   = None   # ← ADDED: visible database/cache metric
  
-    # HIDDEN: honeypot trap fields — NOT in AgentResource
+    # HIDDEN
     peak_cpu_2am:     Optional[float] = None
     peak_queries_2am: Optional[int]   = None
- 
-    # Attachment / dependency
+
     attached_to:   Optional[str]       = None
     dependency_of: Optional[List[str]] = None
  
@@ -109,18 +95,14 @@ class Resource(BaseModel):
  
     # Instance sizing
     instance_size:    Optional[InstanceSize] = None
-    # Reference cost when resource is at LARGE size.
-    # Used by _compute_resized_cost. Set for all VM/DB resources.
     base_cost_at_large: Optional[float] = None
  
-    # Tags
     tags: Dict[str, str] = Field(default_factory=dict)
  
-    # HIDDEN: internal safety flags — NOT in AgentResource
+    # HIDDEN: 
     safe_to_terminate: bool = True
     is_production:     bool = False
  
-    # Task 3 drain sequence state (mutated by environment)
     traffic_migrated:    bool = False
     connections_drained: bool = False
  
@@ -129,7 +111,7 @@ class Resource(BaseModel):
         return self.status not in (ResourceStatus.DELETED, ResourceStatus.MIGRATED)
  
     def to_agent_view(self) -> AgentResource:
-        """Sanitized view — strips all hidden fields."""
+        """strips all hidden fields."""
         return AgentResource(
             id=self.id,
             name=self.name,
@@ -151,13 +133,9 @@ class Resource(BaseModel):
         )
  
  
-# ─── Agent Resource (sanitized — what agent actually sees) ────────────────────
+# Agent Resource
  
 class AgentResource(BaseModel):
-    """
-    Sanitized resource view in observations.
-    All honeypot fields and internal flags excluded.
-    """
     id:            str
     name:          str
     resource_type: ResourceType
@@ -168,7 +146,7 @@ class AgentResource(BaseModel):
     cpu_avg_24h:      Optional[float] = None
     ram_avg_24h:      Optional[float] = None
     traffic_per_hour: Optional[int]   = None
-    queries_per_hour: Optional[int]   = None   # ← ADDED: exposed to agent (non-hidden)
+    queries_per_hour: Optional[int]   = None  
  
     attached_to:   Optional[str]       = None
     dependency_of: Optional[List[str]] = None
@@ -181,23 +159,19 @@ class AgentResource(BaseModel):
     tags: Dict[str, str] = Field(default_factory=dict)
  
  
-# ─── Action ───────────────────────────────────────────────────────────────────
+# Action
  
 class Action(BaseModel):
-    """One action submitted by the agent per step."""
  
     action_type:   ActionType
     resource_id:   Optional[str]          = None
     new_size:      Optional[InstanceSize] = None
     target_tier:   Optional[StorageTier]  = None
     target_region: Optional[str]          = None
-    # source_region is an alias for target_region for migrate_traffic
-    # (inference.py sends source_region; we accept both)
     source_region: Optional[str]          = None
  
     @model_validator(mode="after")
     def validate_fields(self) -> "Action":
-        # Normalise: if source_region is set, copy to target_region
         if self.source_region and not self.target_region:
             object.__setattr__(self, "target_region", self.source_region)
  
@@ -213,7 +187,7 @@ class Action(BaseModel):
         return self
  
  
-# ─── Step Result ──────────────────────────────────────────────────────────────
+# Step Result
  
 class StepResult(BaseModel):
     reward:      float
@@ -222,7 +196,7 @@ class StepResult(BaseModel):
     observation: Observation
  
  
-# ─── Observation ──────────────────────────────────────────────────────────────
+# Observation
  
 class Observation(BaseModel):
     task_id:   str
@@ -248,7 +222,7 @@ class Observation(BaseModel):
     feedback:            str = ""
  
  
-# ─── Grader ───────────────────────────────────────────────────────────────────
+# Grader
  
 class GraderBreakdown(BaseModel):
     savings_ratio:      float = 0.0
@@ -261,7 +235,7 @@ class GraderBreakdown(BaseModel):
  
 class GraderResult(BaseModel):
     task_id:             str
-    score:               float = Field(..., ge=0.0, le=1.0)
+    score:               float = Field(..., gt=0.0, lt=1.0)
     money_saved:         float
     savings_target:      float
     downtime_events:     int
@@ -272,7 +246,7 @@ class GraderResult(BaseModel):
     message:             str
  
  
-# ─── Task Info ────────────────────────────────────────────────────────────────
+# Task Info
  
 class ActionSchema(BaseModel):
     action_type:     ActionType
@@ -293,7 +267,7 @@ class TaskInfo(BaseModel):
     grading_notes:     str
  
  
-# ─── Baseline result models ───────────────────────────────────────────────────
+# Baseline result models
  
 class TaskBaselineResult(BaseModel):
     task_id:         str
@@ -309,6 +283,5 @@ class BaselineResult(BaseModel):
     results:     List[TaskBaselineResult]
     mean_score:  float
  
- 
-# Resolve forward reference
 StepResult.model_rebuild()
+ 

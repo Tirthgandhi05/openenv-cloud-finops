@@ -9,7 +9,7 @@ GRADER_SEQUENCE_PENALTY   = 0.15
 
 
 def run_grader(env) -> GraderResult:
-    """Score a completed (or in-progress) episode. Returns GraderResult with score in [0.0, 1.0]."""
+    """Returns GraderResult with score in (0.0, 1.0)."""
     current_bill = env._current_bill()
     money_saved  = env._initial_bill - current_bill
     target       = env._savings_target
@@ -22,7 +22,7 @@ def run_grader(env) -> GraderResult:
 
     raw   = savings_ratio - downtime_penalty - false_kill_penalty
     raw  -= honeypot_penalty + sequence_penalty
-    final = max(0.0, min(1.0, raw))
+    final = max(0.01, min(0.99, raw))
 
     breakdown = GraderBreakdown(
         savings_ratio=round(savings_ratio, 4),
