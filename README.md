@@ -144,15 +144,15 @@ The following fields are hidden and never exposed to the agent: `safe_to_termina
 
 | Task ID | Name | Difficulty | Max Steps | Starting Bill | Savings Target |
 |---------|------|------------|-----------|---------------|----------------|
-| task_1 | Orphan Cleanup | Easy | 30 | $7,450 | $705 |
-| task_2 | Rightsizing & Cold Migration | Medium | 40 | $16,908 | $6,000 |
-| task_3 | Multi-Region Failover | Hard | 60 | ~$105,000 | $15,000 |
+| task_1 | Orphan Cleanup | Easy | 15 | $8,015 | $705 |
+| task_2 | Rightsizing & Cold Migration | Medium | 18 | $11,840 | $3,500 |
+| task_3 | Multi-Region Failover | Hard | 35 | 29,000 | $10,000 |
 
 **task_1 — Orphan Cleanup**
 20 resources in us-east-1. The agent must identify and delete 8 provably orphaned resources (unassigned IPs, detached volumes, stopped VMs, old snapshots) without touching any production resource.
 
 **task_2 — Rightsizing & Cold Migration**
-30 resources in us-east-1. The agent resizes oversized VMs with CPU utilization under 10% and migrates stale archives (last accessed over 240 days) to cold storage.
+20 resources in us-east-1. The agent resizes oversized VMs with CPU utilization under 10% and migrates stale archives (last accessed over 400 days)
 
 **task_3 — Multi-Region Failover**
 50 resources across us-east-1 and us-west-2. The agent must migrate traffic from the legacy east region, wait for connection draining, then safely terminate east resources. Includes three honeypot traps: midnight batch databases, mislabeled dev resources, and orphan-appearing volumes with hidden dependencies.
@@ -190,14 +190,14 @@ score = (orphans_removed / total_orphans)
 
 **Task 2:**
 ```
-score = min(savings / $6,000, 1.0)
+score = min(savings / $3,500, 1.0)
         - 0.20 × downtime_events
         - 0.20 × false_kills
 ```
 
 **Task 3:**
 ```
-score = min(savings / $15,000, 1.0)
+score = min(savings / $10,000, 1.0)
         - 0.20 × downtime
         - 0.20 × false_kills
         - 0.25 × honeypot_hits
@@ -340,7 +340,7 @@ Hugging Face Spaces compatible — listens on port 7860.
 | CF-001 | Orphan Storage Volume | VM deleted, volume left behind | `attached_to: null` → terminate |
 | CF-002 | Unused Elastic IP | IP reserved but never assigned | `assigned_to: null` → release |
 | CF-003 | Oversized Compute | Low utilization workload | CPU < 10% → resize instance |
-| CF-004 | Cold Storage Candidate | Old logs rarely accessed | `last_accessed > 240 days` → migrate cold |
+| CF-004 | Cold Storage Candidate | Old logs rarely accessed | `last_accessed > 400 days`  → migrate cold |
 | CF-005 | Multi-Region Redundancy | Infrastructure duplicated across regions | Migrate traffic → shutdown legacy region |
 | CF-006 | Hidden Dependency Trap | Resource appears idle but is critical | Check `dependency_of` before deletion |
 
@@ -352,7 +352,7 @@ Hugging Face Spaces compatible — listens on port 7860.
 ├── README.md
 ├── requirements.txt
 ├── openenv.yaml
-├── tasks.py        # Scenario definitions (6 scenarios across 3 tasks)
+├── resources.py        # Scenario definitions (6 scenarios across 3 tasks)
 ├── graders.py      # Deterministic graders for all tasks
 ├── inference.py    # Baseline agent + smart fallback logic
 └── server/
