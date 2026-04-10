@@ -1,22 +1,13 @@
  ☁️ Cloud FinOps Cost Optimization
----
-title: OpenEnv Cloud FinOps
-emoji: ☁️
-colorFrom: blue
-colorTo: green
-sdk: docker
-app_port: 7860
-tags:
-  - openenv
-  - cloud
-  - finops
-  - reinforcement-learning
-  - llm-agents
-  - fastapi
-  - simulation
-pinned: false
-license: mit
----
+| Key        | Value                     |
+|------------|--------------------------|
+| Title      | OpenEnv Cloud FinOps     |
+| Emoji      | ☁️                       |
+| SDK        | Docker                   |
+| App Port   | 7860                     |
+| License    | MIT                      |
+| Pinned     | false                    |
+| Tags       | openenv, cloud, finops, reinforcement-learning, llm-agents, fastapi, simulation |
 ![Python](https://img.shields.io/badge/python-%233776AB.svg?style=for-the-badge&logo=python&logoColor=white)![FastAPI](https://img.shields.io/badge/fastapi-%23009688.svg?style=for-the-badge&logo=fastapi&logoColor=white)![Pydantic](https://img.shields.io/badge/pydantic-%23E92063.svg?style=for-the-badge&logo=pydantic&logoColor=white)![Uvicorn](https://img.shields.io/badge/uvicorn-%23000000.svg?style=for-the-badge&logo=uvicorn&logoColor=white)
 ![Reinforcement Learning](https://img.shields.io/badge/Reinforcement%20Learning-Agent-blue?style=for-the-badge)![OpenAI](https://img.shields.io/badge/LLM-Agents-black?style=for-the-badge&logo=openai&logoColor=white)![REST API](https://img.shields.io/badge/API-REST-orange?style=for-the-badge)![Simulation](https://img.shields.io/badge/Cloud-Simulation-green?style=for-the-badge)![Docker](https://img.shields.io/badge/docker-%230db7ed.svg?style=for-the-badge&logo=docker&logoColor=white)![OpenEnv](https://img.shields.io/badge/OpenEnv-Evaluation-purple?style=for-the-badge)
 
