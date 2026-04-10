@@ -4,7 +4,8 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 from enum import Enum
  
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
+from openenv.core.env_server import Action as _BaseAction, Observation as _BaseObservation, State as _BaseState
   
 INSTANCE_SIZE_ORDER = ["nano", "micro", "small", "medium", "large", "xlarge"]
 
@@ -64,7 +65,7 @@ class TaskDifficulty(str, Enum):
  
 # Internal Resource
  
-class Resource(BaseModel):
+class Resource(_BaseObservation):
     """
     Contains hidden fields never sent to agent.
     """
@@ -91,7 +92,7 @@ class Resource(BaseModel):
     # Storage
     storage_tier:           Optional[StorageTier] = None
     last_accessed_days_ago: Optional[int]         = None
-    size_gb:                Optional[int]         = None
+    size_gb:                Optional[int]          = None
  
     # Instance sizing
     instance_size:    Optional[InstanceSize] = None
@@ -135,7 +136,7 @@ class Resource(BaseModel):
  
 # Agent Resource
  
-class AgentResource(BaseModel):
+class AgentResource(_BaseObservation):
     id:            str
     name:          str
     resource_type: ResourceType
@@ -159,10 +160,10 @@ class AgentResource(BaseModel):
     tags: Dict[str, str] = Field(default_factory=dict)
  
  
-# Action
- 
-class Action(BaseModel):
- 
+# Action — inherits from openenv.core.Action
+
+class FinOpsAction(_BaseAction):
+
     action_type:   ActionType
     resource_id:   Optional[str]          = None
     new_size:      Optional[InstanceSize] = None
@@ -171,7 +172,7 @@ class Action(BaseModel):
     source_region: Optional[str]          = None
  
     @model_validator(mode="after")
-    def validate_fields(self) -> "Action":
+    def validate_fields(self) -> "FinOpsAction":
         if self.source_region and not self.target_region:
             object.__setattr__(self, "target_region", self.source_region)
  
@@ -185,20 +186,23 @@ class Action(BaseModel):
         if t not in (ActionType.WAIT, ActionType.MIGRATE_TRAFFIC) and self.resource_id is None:
             raise ValueError(f"{t} requires resource_id.")
         return self
+
+# Keep the old name as an alias for backwards compatibility
+Action = FinOpsAction
  
  
 # Step Result
  
-class StepResult(BaseModel):
+class StepResult(_BaseObservation):
     reward:      float
     done:        bool = False
     info:        Dict[str, Any] = Field(default_factory=dict)
-    observation: Observation
+    observation: "FinOpsObservation"
  
  
-# Observation
- 
-class Observation(BaseModel):
+# Observation — inherits from openenv.core.Observation
+
+class FinOpsObservation(_BaseObservation):
     task_id:   str
     step:      int = 0
     max_steps: int
@@ -220,11 +224,30 @@ class Observation(BaseModel):
     honeypot_hits:       int = 0
     sequence_violations: int = 0
     feedback:            str = ""
+
+# Keep old name as alias
+Observation = FinOpsObservation
+
+
+# State — inherits from openenv.core.State
+
+class FinOpsState(_BaseState):
+    episode_id:          str
+    step_count:          int
+    task_id:             Optional[str]  = None
+    monthly_bill_start:  float          = 0.0
+    monthly_bill_current: float         = 0.0
+    savings_target:      float          = 0.0
+    downtime_events:     int            = 0
+    honeypot_hits:       int            = 0
+    sequence_violations: int            = 0
+    false_kills:         int            = 0
+    done:                bool           = False
  
  
 # Grader
  
-class GraderBreakdown(BaseModel):
+class GraderBreakdown(_BaseObservation):
     savings_ratio:      float = 0.0
     downtime_penalty:   float = 0.0
     false_kill_penalty: float = 0.0
@@ -233,7 +256,7 @@ class GraderBreakdown(BaseModel):
     final_score:        float = 0.0
  
  
-class GraderResult(BaseModel):
+class GraderResult(_BaseObservation):
     task_id:             str
     score:               float = Field(..., gt=0.0, lt=1.0)
     money_saved:         float
@@ -248,13 +271,13 @@ class GraderResult(BaseModel):
  
 # Task Info
  
-class ActionSchema(BaseModel):
+class ActionSchema(_BaseObservation):
     action_type:     ActionType
     required_fields: List[str]
     description:     str
  
  
-class TaskInfo(BaseModel):
+class TaskInfo(_BaseObservation):
     task_id:           str
     name:              str
     difficulty:        TaskDifficulty
@@ -269,7 +292,7 @@ class TaskInfo(BaseModel):
  
 # Baseline result models
  
-class TaskBaselineResult(BaseModel):
+class TaskBaselineResult(_BaseObservation):
     task_id:         str
     score:           float
     money_saved:     float
@@ -278,9 +301,9 @@ class TaskBaselineResult(BaseModel):
     notes:           str
  
  
-class BaselineResult(BaseModel):
+class BaselineResult(_BaseObservation):
     model_used:  str
     results:     List[TaskBaselineResult]
     mean_score:  float
- 
+
 StepResult.model_rebuild()

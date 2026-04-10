@@ -2,7 +2,9 @@
 from __future__ import annotations
 import copy
 from typing import Dict, List, Optional, Tuple
+from openenv.core.env_server import Environment
 from models import (
+    FinOpsAction, FinOpsObservation, FinOpsState,
     Action, ActionType, AgentResource, GraderBreakdown, GraderResult,
     INSTANCE_SIZE_COST_MULTIPLIER, INSTANCE_SIZE_ORDER,
     Observation, Resource, ResourceStatus, ResourceType, StepResult, StorageTier,
@@ -25,7 +27,7 @@ GRADER_HONEYPOT_PENALTY    = 0.20
 GRADER_SEQUENCE_PENALTY    = 0.15
 
 
-class FinOpsEnv:
+class FinOpsEnvironment(Environment):
     def __init__(self) -> None:
         self._task_id: Optional[str] = None
         self._resources: Dict[str, Resource] = {}
@@ -40,7 +42,7 @@ class FinOpsEnv:
         self._traffic_migrated_from: Optional[str] = None
         self._savings_target: float = 0.0
 
-    def reset(self, task_id: str) -> Observation:
+    def reset(self, task_id: str = "task_1") -> FinOpsObservation:
         if task_id not in TASKS:
             raise KeyError(f"Unknown task_id '{task_id}'. Valid: {list(TASKS)}")
         meta = TASK_META[task_id]
@@ -59,7 +61,7 @@ class FinOpsEnv:
         self._traffic_migrated_from = None
         return self._make_observation(feedback="Episode started. Good luck.")
 
-    def step(self, action: Action) -> StepResult:
+    def step(self, action: FinOpsAction) -> StepResult:
         if self._task_id is None:
             raise RuntimeError("Call reset() before step().")
         self._step += 1
@@ -71,10 +73,21 @@ class FinOpsEnv:
         obs = self._make_observation(feedback=feedback)
         return StepResult(reward=reward, done=done, info=info, observation=obs)
 
-    def state(self) -> Observation:
-        if self._task_id is None:
-            raise RuntimeError("Call reset() before state().")
-        return self._make_observation(feedback="State snapshot.")
+    @property
+    def state(self) -> FinOpsState:
+        return FinOpsState(
+            episode_id=self._task_id or "",
+            step_count=self._step,
+            task_id=self._task_id,
+            monthly_bill_start=round(self._initial_bill, 2),
+            monthly_bill_current=round(self._current_bill(), 2),
+            savings_target=self._savings_target,
+            downtime_events=self._downtime_events,
+            honeypot_hits=self._honeypot_hits,
+            sequence_violations=self._sequence_violations,
+            false_kills=self._false_kills,
+            done=(self._step >= self._max_steps),
+        )
 
     def grade(self) -> GraderResult:
         if self._task_id is None:
@@ -111,7 +124,7 @@ class FinOpsEnv:
             message=f"{verdict} Saved ${money_saved:,.0f} of ${target:,.0f} target.",
         )
 
-    def _apply_action(self, action: Action) -> Tuple[float, str, dict]:
+    def _apply_action(self, action: FinOpsAction) -> Tuple[float, str, dict]:
         t = action.action_type
         if t == ActionType.TERMINATE: return self._handle_terminate(action)
         elif t == ActionType.RESIZE: return self._handle_resize(action)
@@ -120,7 +133,7 @@ class FinOpsEnv:
         elif t == ActionType.WAIT: return self._handle_wait(action)
         else: return 0.0, f"Unknown action type '{t}'.", {"error": "unknown_action"}
 
-    def _handle_terminate(self, action: Action) -> Tuple[float, str, dict]:
+    def _handle_terminate(self, action: FinOpsAction) -> Tuple[float, str, dict]:
         resource = self._get_resource(action.resource_id)
         if resource is None:
             return 0.0, f"Resource '{action.resource_id}' not found.", {"error": "not_found"}
@@ -176,7 +189,7 @@ class FinOpsEnv:
             f"Terminated {resource.name}. Saved ${savings:,.2f}/month. +{reward:,.0f} reward."
         ), {"savings_delta": savings}
 
-    def _handle_resize(self, action: Action) -> Tuple[float, str, dict]:
+    def _handle_resize(self, action: FinOpsAction) -> Tuple[float, str, dict]:
         resource = self._get_resource(action.resource_id)
         if resource is None:
             return 0.0, f"Resource '{action.resource_id}' not found.", {"error": "not_found"}
@@ -237,7 +250,7 @@ class FinOpsEnv:
             f"Saved ${savings:,.2f}/month. +{reward:,.0f} reward."
         ), {"savings_delta": savings}
 
-    def _handle_migrate_storage(self, action: Action) -> Tuple[float, str, dict]:
+    def _handle_migrate_storage(self, action: FinOpsAction) -> Tuple[float, str, dict]:
         resource = self._get_resource(action.resource_id)
         if resource is None:
             return 0.0, f"Resource '{action.resource_id}' not found.", {"error": "not_found"}
@@ -291,7 +304,7 @@ class FinOpsEnv:
             f"${old_cost:,.2f} → ${new_cost:,.2f}/month. Saved ${savings:,.2f}/month."
         ), {"savings_delta": savings}
 
-    def _handle_migrate_traffic(self, action: Action) -> Tuple[float, str, dict]:
+    def _handle_migrate_traffic(self, action: FinOpsAction) -> Tuple[float, str, dict]:
         if self._task_id != "task_3":
             return -W_WASTED_ACTION, "migrate_traffic only valid in task_3.", {"warning": "wrong_task"}
         source = action.source_region
@@ -314,7 +327,7 @@ class FinOpsEnv:
             f"Call WAIT next, then TERMINATE."
         ), {"migrated_region": source, "resources_affected": count}
 
-    def _handle_wait(self, action: Action) -> Tuple[float, str, dict]:
+    def _handle_wait(self, action: FinOpsAction) -> Tuple[float, str, dict]:
         if self._task_id != "task_3":
             return -W_WAIT_STEP, "WAIT has no effect outside task_3.", {"warning": "wrong_task"}
         if self._traffic_migrated_from is None:
@@ -366,12 +379,12 @@ class FinOpsEnv:
             ratio = new_factor / current_factor if current_factor else 1.0
             return round(resource.monthly_cost * ratio, 2)
 
-    def _make_observation(self, feedback: str = "") -> Observation:
+    def _make_observation(self, feedback: str = "") -> FinOpsObservation:
         current_bill = self._current_bill()
         savings = self._initial_bill - current_bill
         uptime = max(0.0, 100.0 - self._downtime_events * 5.0)
         visible = [r.to_agent_view() for r in self._resources.values() if r.is_active]
-        return Observation(
+        return FinOpsObservation(
             task_id=self._task_id, step=self._step, max_steps=self._max_steps,
             monthly_bill_start=round(self._initial_bill, 2),
             monthly_bill_current=round(current_bill, 2),
@@ -382,3 +395,7 @@ class FinOpsEnv:
             resources=visible, honeypot_hits=self._honeypot_hits,
             sequence_violations=self._sequence_violations, feedback=feedback,
         )
+
+
+# Keep old name as alias for backwards compatibility
+FinOpsEnv = FinOpsEnvironment

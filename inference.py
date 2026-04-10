@@ -18,7 +18,7 @@ API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY", "")
 BENCHMARK    = "cloud-finops"
-MAX_TOTAL_CALLS = 50
+MAX_TOTAL_CALLS = 90
 TEMPERATURE  = 0.2 
 
 client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
